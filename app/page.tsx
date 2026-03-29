@@ -109,7 +109,11 @@ export default function Page() {
                 ? "대여하기"
                 : "반납하기"
         }
-        onBack={screen !== "home" ? () => setScreen(screen.startsWith("admin") ? "admin_home" : "home") : undefined}
+        onBack={
+          screen !== "home"
+            ? () => setScreen(screen === "admin_home" ? "home" : screen.startsWith("admin") ? "admin_home" : "home")
+            : undefined
+        }
       />
 
       {screen === "home" && <HomeCards onGo={(next) => setScreen(next as Screen)} />}
