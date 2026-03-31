@@ -4,34 +4,38 @@ import { BorrowTransaction, Equipment } from "@/types/app";
 
 export const DEFAULT_ADMIN_PASSWORD = ADMIN_DEFAULT_PASSWORD;
 
-export function getEquipments(_initial?: Equipment[]) {
+export async function loadAppState() {
+  return appStorageService.loadState();
+}
+
+export async function getEquipments(_initial?: Equipment[]) {
   return appStorageService.getEquipments();
 }
 
-export function setEquipments(next: Equipment[]) {
-  appStorageService.setEquipments(next);
+export async function setEquipments(next: Equipment[]) {
+  await appStorageService.setEquipments(next);
 }
 
-export function resetEquipmentsToDefault() {
-  appStorageService.resetEquipmentsToDefault();
+export async function resetEquipmentsToDefault() {
+  await appStorageService.resetEquipmentsToDefault();
 }
 
-export function getTransactions() {
+export async function getTransactions() {
   return appStorageService.getTransactions();
 }
 
-export function setTransactions(next: BorrowTransaction[]) {
-  appStorageService.setTransactions(next);
+export async function setTransactions(next: BorrowTransaction[]) {
+  await appStorageService.setTransactions(next);
 }
 
-export function getAdminPassword() {
-  return appStorageService.getAdminSettings().password;
+export async function getAdminPassword() {
+  return (await appStorageService.getAdminSettings()).password;
 }
 
-export function isAdminPasswordCustomized() {
-  return appStorageService.getAdminSettings().isCustomized;
+export async function isAdminPasswordCustomized() {
+  return (await appStorageService.getAdminSettings()).isCustomized;
 }
 
-export function setAdminPassword(next: string) {
-  appStorageService.setAdminPassword(next);
+export async function setAdminPassword(next: string) {
+  await appStorageService.setAdminPassword(next);
 }

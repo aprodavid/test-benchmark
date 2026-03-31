@@ -6,66 +6,83 @@
 - Next.js (App Router)
 - TypeScript
 - Tailwind CSS
+- Firebase Cloud Firestore
 
 ## 로컬 실행 방법
 1. 의존성 설치
    ```bash
    npm install
    ```
-2. 개발 서버 실행
+2. 환경변수 파일 준비
+   ```bash
+   cp .env.example .env.local
+   ```
+3. 개발 서버 실행
    ```bash
    npm run dev
    ```
-3. 브라우저에서 `http://localhost:3000` 접속
+4. 브라우저에서 `http://localhost:3000` 접속
 
-## 배포 방법
-이 프로젝트는 `next.config.ts`에서 `output: "export"`를 사용해 정적 배포가 가능하도록 구성되어 있습니다.
+## Firebase 연결 방법
+이 앱은 Firestore를 **주 저장소**로 사용하고, localStorage를 **백업/마이그레이션 용도**로 유지합니다.
 
-1. 빌드
-   ```bash
-   npm run build
-   ```
-2. 생성된 `out/` 디렉터리를 정적 호스팅에 배포
-   - GitHub Pages
-   - Netlify
-   - Vercel(정적 호스팅 모드)
+### 1) Firebase 프로젝트 설정
+- Firebase 콘솔에서 Web App을 생성합니다.
+- Firestore Database를 생성합니다(초기 모드: 테스트 또는 규칙 직접 적용).
 
-### GitHub Pages 예시
-- `npm run build` 후 `out/`를 `gh-pages` 브랜치에 배포
-- GitHub 저장소 Settings → Pages에서 `gh-pages` 브랜치를 서비스 대상으로 지정
+### 2) 환경변수 설정
+`.env.local`에 아래 값들을 설정합니다.
 
-## 참고 사이트와의 차이점
-- 본 구현은 백엔드(Firebase 등) 연동 대신 `localStorage`를 사용합니다.
-- 관리자 인증/권한은 단순화했습니다(학습/검토 목적).
-- 화면/흐름은 공개 관찰 기반으로 맞췄지만, 내부 로직과 코드 구조는 독자 구현입니다.
+```env
+NEXT_PUBLIC_STORAGE_PROVIDER=firestore
+NEXT_PUBLIC_FIREBASE_API_KEY=...
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=...
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
+NEXT_PUBLIC_FIREBASE_APP_ID=...
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=...
+```
 
-## 대체한 자산/문구 목록
-- 원본 이미지 업로드/외부 이미지 자산 대신 기본적으로 이모지(예: 🏀, ⚽)를 사용합니다.
-- 고유 상표/브랜드 자산은 포함하지 않았습니다.
-- 일부 안내 문구는 의미를 유지하면서 재작성했습니다.
+> Analytics는 현재 필수가 아니므로 `NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID`는 비워도 됩니다.
 
-## 기본 예시 데이터 위치
-기본 예시 물품(악기 세트)은 아래 파일에 정의되어 있습니다.
-- `src/data/defaultEquipments.ts`
+### 3) Firestore 컬렉션/문서 구조
+- `app_meta/state`
+  - `schemaVersion`
+  - `updatedAt`
+  - `migratedFromLocalStorage`
+- `equipments/list`
+  - `items: Equipment[]`
+  - `updatedAt`
+- `loans/transactions`
+  - `items: BorrowTransaction[]`
+  - `updatedAt`
+- `settings/admin`
+  - `password`
+  - `isCustomized`
+  - `updatedAt`
 
-초기 로드 시(`localStorage`에 데이터가 없을 때) 해당 목록으로 시작합니다.
+## localStorage → Firestore 마이그레이션 흐름
+1. 앱 시작 시 Firestore 문서를 먼저 조회합니다.
+2. Firestore 데이터가 없으면 localStorage(`tb.appState.v1`)를 조회합니다.
+3. localStorage도 없으면 레거시 키(`tb.equipments`, `tb.transactions`, `tb.adminPassword`)에서 마이그레이션합니다.
+4. 마이그레이션된 데이터는 localStorage 백업(`tb.firestoreMigrationBackup.v1`)과 Firestore에 동시에 저장합니다.
+5. 이후 읽기 기준은 Firestore이며, localStorage는 오프라인/장애 시 안전망으로 사용됩니다.
+
+## Firestore 보안 규칙 초안
+`firestore.rules` 파일에 알파 테스트용/운영용 초안을 함께 제공합니다.
 
 ## 주요 구조
 - `app/page.tsx`: 전체 화면 상태/흐름 제어
 - `src/components/ui.tsx`: 재사용 UI 컴포넌트(헤더/CTA/카드 등)
-- `src/lib/storage.ts`: 화면에서 사용하는 저장 API(서비스 래퍼)
-- `src/storage/service.ts`: 앱 저장 상태(AppState) 관리 + 레거시 키 마이그레이션
-- `src/storage/adapters/localStorageAdapter.ts`: 현재 사용 중인 저장 어댑터
-- `src/storage/adapters/firebaseAdapter.ts`: 향후 Firebase 연결용 placeholder
+- `src/lib/firebase.ts`: Firebase 앱/Firestore 초기화
+- `src/lib/storage.ts`: 화면에서 사용하는 저장 API
+- `src/storage/service.ts`: Firestore 우선 저장 + localStorage 백업/마이그레이션
+- `src/storage/adapters/localStorageAdapter.ts`: localStorage 어댑터
+- `src/storage/adapters/firebaseAdapter.ts`: Firestore 문서 입출력 유틸(호환용)
 - `src/config/security.ts`: 관리자 초기 비밀번호 설정 (`ADMIN_DEFAULT_PASSWORD`)
-- `PLAN.md`, `docs/reference-audit.md`: 관찰 기반 명세 문서
 
-## 관리자 비밀번호 기본값 변경
-- 기본 관리자 비밀번호는 `0000`입니다.
-- 코드에서 기본값을 바꾸려면 `src/config/security.ts`의 `ADMIN_DEFAULT_PASSWORD`를 수정하세요.
-
-## Firebase로 전환할 때
-1. `.env.example`를 참고해 Firebase 환경변수를 채웁니다.
-2. `src/storage/adapters/firebaseAdapter.ts`의 `read/write`를 Firestore 로직으로 구현합니다.
-3. `src/storage/service.ts` 하단에서 생성하는 어댑터를 `LocalStorageAdapter`에서 `FirebaseAdapter`로 교체합니다.
-4. 화면(`app/page.tsx`)은 `src/lib/storage.ts`를 통해 접근하므로 추가 수정 없이 유지할 수 있습니다.
+## 빌드
+```bash
+npm run build
+```

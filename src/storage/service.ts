@@ -1,13 +1,16 @@
 import { ADMIN_DEFAULT_PASSWORD } from "@/config/security";
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
+import { getFirebaseDb } from "@/lib/firebase";
 import { LocalStorageAdapter } from "@/storage/adapters/localStorageAdapter";
-import { AdminSettings, AppState, StorageAdapter } from "@/storage/types";
+import { AdminSettings, AppState } from "@/storage/types";
 import { BorrowTransaction, Equipment } from "@/types/app";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 
 const STORAGE_KEY = "tb.appState.v1";
 const LEGACY_KEY_EQUIPMENTS = "tb.equipments";
 const LEGACY_KEY_TRANSACTIONS = "tb.transactions";
 const LEGACY_KEY_ADMIN_PASSWORD = "tb.adminPassword";
+const MIGRATION_BACKUP_KEY = "tb.firestoreMigrationBackup.v1";
 
 const defaultAdminSettings: AdminSettings = {
   password: ADMIN_DEFAULT_PASSWORD,
@@ -31,7 +34,7 @@ function normalizeTransactions(transactions: BorrowTransaction[]) {
   }));
 }
 
-function migrateFromLegacy(adapter: StorageAdapter): AppState {
+function migrateFromLegacyLocalStorage(adapter: LocalStorageAdapter): AppState {
   const fallback = defaultState();
   const equipments = adapter.read<Equipment[]>(LEGACY_KEY_EQUIPMENTS, fallback.equipments);
   const transactions = normalizeTransactions(adapter.read<BorrowTransaction[]>(LEGACY_KEY_TRANSACTIONS, []));
@@ -49,66 +52,157 @@ function migrateFromLegacy(adapter: StorageAdapter): AppState {
   };
 }
 
-export class AppStorageService {
-  constructor(private readonly adapter: StorageAdapter) {}
+async function readFromFirestore(): Promise<AppState | null> {
+  const db = getFirebaseDb();
+  if (!db) return null;
 
-  private loadState(): AppState {
-    const fallback = defaultState();
-    const state = this.adapter.read<AppState | null>(STORAGE_KEY, null);
-    if (state) {
-      return {
-        ...state,
-        transactions: normalizeTransactions(state.transactions ?? []),
-      };
+  try {
+    const [metaSnap, equipmentSnap, transactionSnap, adminSnap] = await Promise.all([
+      getDoc(doc(db, "app_meta", "state")),
+      getDoc(doc(db, "equipments", "list")),
+      getDoc(doc(db, "loans", "transactions")),
+      getDoc(doc(db, "settings", "admin")),
+    ]);
+
+    if (!metaSnap.exists() && !equipmentSnap.exists() && !transactionSnap.exists() && !adminSnap.exists()) {
+      return null;
     }
 
-    const migrated = migrateFromLegacy(this.adapter);
-    this.adapter.write(STORAGE_KEY, migrated);
+    const fallback = defaultState();
+    const schemaVersion = (metaSnap.data()?.schemaVersion as number | undefined) ?? 1;
+    const equipments = (equipmentSnap.data()?.items as Equipment[] | undefined) ?? fallback.equipments;
+    const transactions = normalizeTransactions((transactionSnap.data()?.items as BorrowTransaction[] | undefined) ?? []);
+    const adminSettings = (adminSnap.data() as AdminSettings | undefined) ?? fallback.adminSettings;
+
+    return {
+      schemaVersion,
+      equipments,
+      transactions,
+      adminSettings,
+    };
+  } catch (error) {
+    console.warn("[storage] Firestore read failed. Falling back to localStorage.", error);
+    return null;
+  }
+}
+
+async function writeToFirestore(state: AppState, migratedFromLocalStorage: boolean): Promise<boolean> {
+  const db = getFirebaseDb();
+  if (!db) return false;
+
+  try {
+    await Promise.all([
+      setDoc(doc(db, "app_meta", "state"), {
+        schemaVersion: state.schemaVersion,
+        updatedAt: serverTimestamp(),
+        migratedFromLocalStorage,
+      }, { merge: true }),
+      setDoc(doc(db, "equipments", "list"), {
+        items: state.equipments,
+        updatedAt: serverTimestamp(),
+      }, { merge: true }),
+      setDoc(doc(db, "loans", "transactions"), {
+        items: state.transactions,
+        updatedAt: serverTimestamp(),
+      }, { merge: true }),
+      setDoc(doc(db, "settings", "admin"), {
+        ...state.adminSettings,
+        updatedAt: state.adminSettings.updatedAt,
+      }, { merge: true }),
+    ]);
+
+    return true;
+  } catch (error) {
+    console.warn("[storage] Firestore write failed. Local backup is still updated.", error);
+    return false;
+  }
+}
+
+export class AppStorageService {
+  private readonly local = new LocalStorageAdapter();
+
+  private readLocalState(): AppState | null {
+    const state = this.local.read<AppState | null>(STORAGE_KEY, null);
+    if (!state) return null;
+
+    return {
+      ...state,
+      transactions: normalizeTransactions(state.transactions ?? []),
+    };
+  }
+
+  private writeLocalState(next: AppState) {
+    this.local.write(STORAGE_KEY, next);
+  }
+
+  async loadState(): Promise<AppState> {
+    const firestoreState = await readFromFirestore();
+    if (firestoreState) {
+      this.writeLocalState(firestoreState);
+      return firestoreState;
+    }
+
+    const localState = this.readLocalState();
+    if (localState) {
+      await writeToFirestore(localState, false);
+      return localState;
+    }
+
+    const migrated = migrateFromLegacyLocalStorage(this.local);
+    this.local.write(MIGRATION_BACKUP_KEY, migrated);
+    this.writeLocalState(migrated);
+    await writeToFirestore(migrated, true);
+
     return migrated;
   }
 
-  private saveState(next: AppState) {
-    this.adapter.write(STORAGE_KEY, next);
+  private async patchState(mutator: (state: AppState) => AppState) {
+    const current = await this.loadState();
+    const next = mutator(current);
+
+    this.writeLocalState(next);
+    await writeToFirestore(next, false);
+
+    return next;
   }
 
-  getEquipments() {
-    return this.loadState().equipments;
+  async getEquipments() {
+    return (await this.loadState()).equipments;
   }
 
-  setEquipments(equipments: Equipment[]) {
-    const state = this.loadState();
-    this.saveState({ ...state, equipments });
+  async setEquipments(equipments: Equipment[]) {
+    await this.patchState((state) => ({ ...state, equipments }));
   }
 
-  resetEquipmentsToDefault() {
-    const state = this.loadState();
-    this.saveState({ ...state, equipments: DEFAULT_EQUIPMENTS });
+  async resetEquipmentsToDefault() {
+    await this.patchState((state) => ({ ...state, equipments: DEFAULT_EQUIPMENTS }));
   }
 
-  getTransactions() {
-    return this.loadState().transactions;
+  async getTransactions() {
+    return (await this.loadState()).transactions;
   }
 
-  setTransactions(transactions: BorrowTransaction[]) {
-    const state = this.loadState();
-    this.saveState({ ...state, transactions: normalizeTransactions(transactions) });
+  async setTransactions(transactions: BorrowTransaction[]) {
+    await this.patchState((state) => ({
+      ...state,
+      transactions: normalizeTransactions(transactions),
+    }));
   }
 
-  getAdminSettings() {
-    return this.loadState().adminSettings;
+  async getAdminSettings() {
+    return (await this.loadState()).adminSettings;
   }
 
-  setAdminPassword(password: string) {
-    const state = this.loadState();
-    this.saveState({
+  async setAdminPassword(password: string) {
+    await this.patchState((state) => ({
       ...state,
       adminSettings: {
         password,
         isCustomized: true,
         updatedAt: new Date().toISOString(),
       },
-    });
+    }));
   }
 }
 
-export const appStorageService = new AppStorageService(new LocalStorageAdapter());
+export const appStorageService = new AppStorageService();
