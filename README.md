@@ -67,7 +67,7 @@ NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=...
 2. Firestore `onSnapshot`으로 실시간 구독하여 브라우저 간 변경사항을 즉시 반영합니다.
 3. Firestore 연결 실패 시 localStorage로 자동 fallback하지 않습니다.
 4. 연결 실패 시 UI에 **"Firebase 연결 오류"** 상태가 표시됩니다.
-5. localStorage는 관리자 화면의 **1회 수동 마이그레이션 버튼**을 눌렀을 때만 읽습니다.
+5. localStorage 마이그레이션/자동 fallback은 완전히 제거되어 Firestore만 사용합니다.
 
 ## Firestore 초기 시드 방식
 1. Firestore 문서가 모두 비어 있을 때만 `기본 데이터 시드` 버튼이 노출됩니다.
@@ -84,8 +84,7 @@ NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=...
 - `src/components/ui.tsx`: 재사용 UI 컴포넌트(헤더/CTA/카드 등)
 - `src/lib/firebase.ts`: Firebase 앱/Firestore 초기화
 - `src/lib/storage.ts`: 화면에서 사용하는 Firestore 저장 API
-- `src/storage/service.ts`: Firestore 단일 저장소 서비스 + 관리자 수동 마이그레이션
-- `src/storage/adapters/localStorageAdapter.ts`: localStorage 어댑터
+- `src/storage/service.ts`: Firestore 단일 저장소 서비스
 - `src/config/security.ts`: 관리자 초기 비밀번호 설정 (`ADMIN_DEFAULT_PASSWORD`)
 
 ## 빌드

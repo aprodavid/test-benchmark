@@ -19,11 +19,6 @@ const ITEMS_DOC = { col: "items", id: "master" };
 const LOANS_DOC = { col: "loans", id: "records" };
 const ADMIN_SETTINGS_DOC = { col: "settings", id: "adminSettings" };
 
-const STORAGE_KEY = "tb.appState.v1";
-const LEGACY_KEY_EQUIPMENTS = "tb.equipments";
-const LEGACY_KEY_TRANSACTIONS = "tb.transactions";
-const LEGACY_KEY_ADMIN_PASSWORD = "tb.adminPassword";
-
 const defaultAdminSettings: AdminSettings = {
   password: ADMIN_DEFAULT_PASSWORD,
   isCustomized: false,
@@ -56,54 +51,6 @@ function toIsoString(input: unknown): string {
   return new Date(0).toISOString();
 }
 
-function readLegacyLocalStorage(): AppState | null {
-  if (typeof window === "undefined") return null;
-
-  const readJson = <T>(key: string, fallback: T): T => {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return fallback;
-    }
-  };
-
-  const fromSnapshot = readJson<AppState | null>(STORAGE_KEY, null);
-  if (fromSnapshot) {
-    return {
-      ...fromSnapshot,
-      schemaVersion: 2,
-      transactions: normalizeTransactions(fromSnapshot.transactions ?? []),
-      adminSettings: {
-        ...defaultAdminSettings,
-        ...(fromSnapshot.adminSettings ?? {}),
-        updatedAt: toIsoString(fromSnapshot.adminSettings?.updatedAt),
-      },
-    };
-  }
-
-  const equipments = readJson<Equipment[]>(LEGACY_KEY_EQUIPMENTS, []);
-  const transactions = normalizeTransactions(readJson<BorrowTransaction[]>(LEGACY_KEY_TRANSACTIONS, []));
-  const customPassword = readJson<string | null>(LEGACY_KEY_ADMIN_PASSWORD, null);
-
-  if (equipments.length === 0 && transactions.length === 0 && !customPassword) {
-    return null;
-  }
-
-  return {
-    schemaVersion: 2,
-    equipments: equipments.length > 0 ? equipments : DEFAULT_EQUIPMENTS,
-    transactions,
-    adminSettings: {
-      password: customPassword ?? ADMIN_DEFAULT_PASSWORD,
-      isCustomized: Boolean(customPassword),
-      updatedAt: customPassword ? new Date().toISOString() : new Date(0).toISOString(),
-    },
-  };
-}
-
 async function readStateFromFirestore(): Promise<AppState | null> {
   const db = getFirestoreDb();
   const [metaSnap, itemsSnap, loansSnap, adminSnap] = await Promise.all([
@@ -131,7 +78,7 @@ async function readStateFromFirestore(): Promise<AppState | null> {
   };
 }
 
-async function writeStateToFirestore(state: AppState, source: "app" | "migration" | "seed") {
+async function writeStateToFirestore(state: AppState, source: "app" | "seed") {
   const db = getFirestoreDb();
 
   await Promise.all([
@@ -183,7 +130,6 @@ function parseSnapshotBundle(bundle: SnapshotBundle): AppState | null {
 export type FirestoreDiagnostics = {
   isConnected: boolean;
   isFirestoreEmpty: boolean;
-  canImportLegacyLocalData: boolean;
 };
 
 export class AppStorageService {
@@ -244,37 +190,17 @@ export class AppStorageService {
   async getDiagnostics(): Promise<FirestoreDiagnostics> {
     try {
       const firestoreState = await readStateFromFirestore();
-      const legacyState = readLegacyLocalStorage();
 
       return {
         isConnected: true,
         isFirestoreEmpty: !firestoreState,
-        canImportLegacyLocalData: !firestoreState && Boolean(legacyState),
       };
     } catch {
       return {
         isConnected: false,
         isFirestoreEmpty: true,
-        canImportLegacyLocalData: false,
       };
     }
-  }
-
-  async importLegacyLocalDataToFirestore() {
-    const diagnostics = await this.getDiagnostics();
-    if (!diagnostics.isConnected) {
-      throw new Error("Firebase 연결 오류로 가져오기를 진행할 수 없습니다.");
-    }
-    if (!diagnostics.isFirestoreEmpty) {
-      throw new Error("Firestore에 이미 데이터가 있어 가져오기를 중단했습니다.");
-    }
-
-    const legacy = readLegacyLocalStorage();
-    if (!legacy) {
-      throw new Error("가져올 localStorage 데이터가 없습니다.");
-    }
-
-    await writeStateToFirestore(legacy, "migration");
   }
 
   async seedDefaultsIfFirestoreEmpty() {
@@ -299,7 +225,11 @@ export class AppStorageService {
 
   async resetEquipmentsToDefault() {
     const clonedDefaultEquipments = DEFAULT_EQUIPMENTS.map((equipment) => ({ ...equipment }));
-    await this.patchState((state) => ({ ...state, equipments: clonedDefaultEquipments }));
+    await this.patchState((state) => ({
+      ...state,
+      equipments: clonedDefaultEquipments,
+      transactions: [],
+    }));
   }
 
   async forceReseedDefaultsToFirestore() {
