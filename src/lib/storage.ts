@@ -20,9 +20,6 @@ export async function getStorageDiagnostics() {
   return appStorageService.getDiagnostics();
 }
 
-export async function importLegacyLocalDataToFirestore() {
-  await appStorageService.importLegacyLocalDataToFirestore();
-}
 
 export async function seedDefaultsIfFirestoreEmpty() {
   await appStorageService.seedDefaultsIfFirestoreEmpty();

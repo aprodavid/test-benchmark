@@ -12,8 +12,3 @@ export type AppState = {
   transactions: BorrowTransaction[];
   adminSettings: AdminSettings;
 };
-
-export interface StorageAdapter {
-  read<T>(key: string, fallback: T): T;
-  write<T>(key: string, value: T): void;
-}

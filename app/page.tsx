@@ -8,7 +8,6 @@ import {
   DEFAULT_ADMIN_PASSWORD,
   forceReseedDefaultsToFirestore,
   getStorageDiagnostics,
-  importLegacyLocalDataToFirestore,
   loadAppState,
   resetEquipmentsToDefault,
   seedDefaultsIfFirestoreEmpty,
@@ -51,13 +50,13 @@ export default function Page() {
   const [storageStatus, setStorageStatus] = useState("Firestore 연결 확인 중...");
   const isFirestoreConnected = storageStatus === "저장 위치: Firestore";
   const [isFirestoreEmpty, setIsFirestoreEmpty] = useState(false);
-  const [canImportLegacyData, setCanImportLegacyData] = useState(false);
   const [isAdminActionBusy, setIsAdminActionBusy] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [storageErrorMessage, setStorageErrorMessage] = useState("");
 
   const [newName, setNewName] = useState("");
   const [newEmoji, setNewEmoji] = useState("📦");
@@ -81,23 +80,26 @@ export default function Page() {
         setAdminPasswordState(state.adminSettings.password);
         setHasCustomAdminPassword(state.adminSettings.isCustomized);
         setStorageStatus("저장 위치: Firestore");
+        setStorageErrorMessage("");
         setIsStorageReady(true);
       } catch {
         if (!alive) return;
         setStorageStatus("Firebase 연결 오류");
+        setStorageErrorMessage("Firestore 실시간 동기화 연결이 끊어졌습니다. 네트워크/권한을 확인해주세요.");
       }
 
       try {
         const diagnostics = await getStorageDiagnostics();
         if (!alive) return;
         setIsFirestoreEmpty(diagnostics.isFirestoreEmpty);
-        setCanImportLegacyData(diagnostics.canImportLegacyLocalData);
         if (!diagnostics.isConnected) {
           setStorageStatus("Firebase 연결 오류");
+        setStorageErrorMessage("Firestore 실시간 동기화 연결이 끊어졌습니다. 네트워크/권한을 확인해주세요.");
         }
       } catch {
         if (!alive) return;
         setStorageStatus("Firebase 연결 오류");
+        setStorageErrorMessage("Firestore 실시간 동기화 연결이 끊어졌습니다. 네트워크/권한을 확인해주세요.");
       }
     })();
 
@@ -109,6 +111,7 @@ export default function Page() {
         setAdminPasswordState(state.adminSettings.password);
         setHasCustomAdminPassword(state.adminSettings.isCustomized);
         setStorageStatus("저장 위치: Firestore");
+        setStorageErrorMessage("");
         setIsStorageReady(true);
         setIsFirestoreEmpty(false);
       },
@@ -119,6 +122,7 @@ export default function Page() {
       onError: () => {
         if (!alive) return;
         setStorageStatus("Firebase 연결 오류");
+        setStorageErrorMessage("Firestore 실시간 동기화 연결이 끊어졌습니다. 네트워크/권한을 확인해주세요.");
       },
     });
 
@@ -127,16 +131,6 @@ export default function Page() {
       unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    if (!isStorageReady) return;
-    void setEquipments(equipments);
-  }, [equipments, isStorageReady]);
-
-  useEffect(() => {
-    if (!isStorageReady) return;
-    void setTransactions(transactions);
-  }, [transactions, isStorageReady]);
 
   const borrowedList = useMemo(
     () => transactions.filter((t) => t.status === "borrowed").sort((a, b) => b.timestamp - a.timestamp),
@@ -165,7 +159,14 @@ export default function Page() {
     setScreen("home");
   };
 
-  const completeBorrow = () => {
+  const handleStorageWriteError = (error: unknown, fallbackMessage: string) => {
+    const message = error instanceof Error ? error.message : fallbackMessage;
+    setStorageStatus("Firebase 연결 오류");
+    setStorageErrorMessage(message);
+    alert(message);
+  };
+
+  const completeBorrow = async () => {
     if (!borrowerName) {
       alert("대여자 정보를 입력해주세요.");
       return;
@@ -175,30 +176,37 @@ export default function Page() {
       return;
     }
     setIsBusy(true);
-    const now = Date.now();
-    const nextRows = Object.entries(selected).map(([equipmentId, qty], i) => {
-      const equipment = equipments.find((e) => e.id === equipmentId);
-      return {
-        id: `tx-${now}-${i}`,
-        equipmentId,
-        equipmentName: equipment?.name ?? "알 수 없는 물품",
-        borrowedQuantity: qty,
-        borrowerName,
-        borrowPin: borrowPinInput,
-        status: "borrowed" as const,
-        timestamp: now,
-      };
-    });
-    setTransactionsState((prev) => [...nextRows, ...prev]);
-    setIsBusy(false);
-    setSuccessMessage("대여가 완료되었습니다!");
+    try {
+      const now = Date.now();
+      const nextRows = Object.entries(selected).map(([equipmentId, qty], i) => {
+        const equipment = equipments.find((e) => e.id === equipmentId);
+        return {
+          id: `tx-${now}-${i}`,
+          equipmentId,
+          equipmentName: equipment?.name ?? "알 수 없는 물품",
+          borrowedQuantity: qty,
+          borrowerName,
+          borrowPin: borrowPinInput,
+          status: "borrowed" as const,
+          timestamp: now,
+        };
+      });
+      const nextTransactions = [...nextRows, ...transactions];
+      await setTransactions(nextTransactions);
+      setSuccessMessage("대여가 완료되었습니다!");
+    } catch (error) {
+      handleStorageWriteError(error, "대여 데이터를 Firestore에 저장하지 못했습니다.");
+      return;
+    } finally {
+      setIsBusy(false);
+    }
     setTimeout(() => {
       setSuccessMessage("");
       moveHome();
     }, 1100);
   };
 
-  const completeReturn = () => {
+  const completeReturn = async () => {
     const selectedRows = borrowedList.filter((tx) => selectedReturnIds.includes(tx.id));
     const hasPinProtectedRow = selectedRows.some((tx) => !!tx.borrowPin);
     if (hasPinProtectedRow && !/^\d{4}$/.test(returnPinInput)) {
@@ -213,12 +221,19 @@ export default function Page() {
     }
 
     setIsBusy(true);
-    const idSet = new Set(selectedReturnIds);
-    setTransactionsState((prev) => prev.map((tx) => (idSet.has(tx.id) ? { ...tx, status: "returned" as const } : tx)));
-    setIsBusy(false);
-    setReturnPinInput("");
-    setReturnPinError("");
-    setSuccessMessage("반납 처리가 완료되었습니다!");
+    try {
+      const idSet = new Set(selectedReturnIds);
+      const nextTransactions = transactions.map((tx) => (idSet.has(tx.id) ? { ...tx, status: "returned" as const } : tx));
+      await setTransactions(nextTransactions);
+      setReturnPinInput("");
+      setReturnPinError("");
+      setSuccessMessage("반납 처리가 완료되었습니다!");
+    } catch (error) {
+      handleStorageWriteError(error, "반납 데이터를 Firestore에 저장하지 못했습니다.");
+      return;
+    } finally {
+      setIsBusy(false);
+    }
     setTimeout(() => {
       setSuccessMessage("");
       moveHome();
@@ -279,6 +294,9 @@ export default function Page() {
         <p className={`rounded-xl border p-3 text-sm font-semibold ${isFirestoreConnected ? "border-green-100 bg-green-50 text-green-700" : "border-red-100 bg-red-50 text-red-700"}`}>
           {storageStatus}
         </p>
+        {storageErrorMessage && (
+          <p className="mt-2 rounded-xl border border-red-100 bg-red-50 p-3 text-sm font-medium text-red-700">{storageErrorMessage}</p>
+        )}
       </div>
 
       {screen === "home" && (
@@ -472,7 +490,7 @@ export default function Page() {
             />
             <p className="mt-3 text-sm text-gray-500">정확히 4자리 숫자를 입력해야 대여를 완료할 수 있습니다.</p>
           </div>
-          <FixedCTA label="대여 완료하기" color="green" loading={isBusy} disabled={!isBorrowPinValid} onClick={completeBorrow} />
+          <FixedCTA label="대여 완료하기" color="green" loading={isBusy} disabled={!isBorrowPinValid} onClick={() => { void completeBorrow(); }} />
         </section>
       )}
 
@@ -529,7 +547,7 @@ export default function Page() {
               <p className="mt-3 text-xs text-gray-500">기존 데이터(비밀번호 미설정)는 입력값과 무관하게 반납됩니다.</p>
             )}
           </div>
-          <FixedCTA label={`선택한 ${selectedReturnIds.length}건 반납 완료`} color="red" loading={isBusy} onClick={completeReturn} />
+          <FixedCTA label={`선택한 ${selectedReturnIds.length}건 반납 완료`} color="red" loading={isBusy} onClick={() => { void completeReturn(); }} />
         </section>
       )}
 
@@ -635,13 +653,17 @@ export default function Page() {
                   if (currentPassword !== adminPassword) return alert("현재 비밀번호가 올바르지 않습니다.");
                   if (!/^\d{4}$/.test(newPassword)) return alert("새 비밀번호는 4자리 숫자로 입력해주세요.");
                   if (newPassword !== confirmPassword) return alert("새 비밀번호가 일치하지 않습니다.");
-                  void setAdminPassword(newPassword);
-                  setAdminPasswordState(newPassword);
-                  setHasCustomAdminPassword(true);
-                  setCurrentPassword("");
-                  setNewPassword("");
-                  setConfirmPassword("");
-                  alert("비밀번호가 변경되었습니다!");
+                  void (async () => {
+                    try {
+                      await setAdminPassword(newPassword);
+                      setCurrentPassword("");
+                      setNewPassword("");
+                      setConfirmPassword("");
+                      alert("비밀번호가 변경되었습니다!");
+                    } catch (error) {
+                      handleStorageWriteError(error, "비밀번호를 Firestore에 저장하지 못했습니다.");
+                    }
+                  })();
                 }}
                 className="mt-4 w-full rounded-xl bg-gray-800 py-4 text-lg font-bold text-white transition-transform hover:bg-gray-900 active:scale-95"
               >변경하기</button>
@@ -650,9 +672,12 @@ export default function Page() {
               onClick={() => {
                 if (!confirm("새 기본 교구 세트로 재설정할까요? 현재 등록된 교구 목록이 교체됩니다.")) return;
                 void (async () => {
-                  await resetEquipmentsToDefault();
-                  setEquipmentsState(DEFAULT_EQUIPMENTS);
-                  alert("기본 교구 세트로 재설정되었습니다.");
+                  try {
+                    await resetEquipmentsToDefault();
+                    alert("기본 교구 세트로 재설정되었습니다. (모든 대여 기록도 초기화됨)");
+                  } catch (error) {
+                    handleStorageWriteError(error, "기본 교구 재설정에 실패했습니다.");
+                  }
                 })();
               }}
               className="mt-4 w-full rounded-xl border border-blue-200 bg-blue-50 py-3 text-base font-bold text-blue-700 transition-colors hover:bg-blue-100"
@@ -714,29 +739,6 @@ export default function Page() {
             >
               기본 교구를 Firestore에 다시 시드하기 (주의)
             </button>
-            {isFirestoreEmpty && canImportLegacyData && (
-              <button
-                disabled={isAdminActionBusy}
-                onClick={() => {
-                  if (!confirm("현재 브라우저 localStorage 데이터를 Firestore로 1회 업로드할까요?")) return;
-                  void (async () => {
-                    try {
-                      setIsAdminActionBusy(true);
-                      await importLegacyLocalDataToFirestore();
-                      alert("localStorage 데이터를 Firestore로 가져왔습니다.");
-                    } catch (error) {
-                      const message = error instanceof Error ? error.message : "데이터 가져오기에 실패했습니다.";
-                      alert(message);
-                    } finally {
-                      setIsAdminActionBusy(false);
-                    }
-                  })();
-                }}
-                className="mt-4 w-full rounded-xl border border-orange-200 bg-orange-50 py-3 text-base font-bold text-orange-700 transition-colors hover:bg-orange-100 disabled:opacity-60"
-              >
-                현재 브라우저 데이터를 Firestore로 가져오기 (1회 초기 업로드)
-              </button>
-            )}
           </div>
         </section>
       )}
