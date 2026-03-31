@@ -6,6 +6,7 @@ import { AdminCards, Container, EmptyState, FixedCTA, Header, HomeCards } from "
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
 import {
   DEFAULT_ADMIN_PASSWORD,
+  forceReseedDefaultsToFirestore,
   getStorageDiagnostics,
   importLegacyLocalDataToFirestore,
   loadAppState,
@@ -48,6 +49,7 @@ export default function Page() {
   const [hasCustomAdminPassword, setHasCustomAdminPassword] = useState(false);
   const [isStorageReady, setIsStorageReady] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Firestore 연결 확인 중...");
+  const isFirestoreConnected = storageStatus === "저장 위치: Firestore";
   const [isFirestoreEmpty, setIsFirestoreEmpty] = useState(false);
   const [canImportLegacyData, setCanImportLegacyData] = useState(false);
   const [isAdminActionBusy, setIsAdminActionBusy] = useState(false);
@@ -135,6 +137,7 @@ export default function Page() {
     if (!isStorageReady) return;
     void setTransactions(transactions);
   }, [transactions, isStorageReady]);
+
   const borrowedList = useMemo(
     () => transactions.filter((t) => t.status === "borrowed").sort((a, b) => b.timestamp - a.timestamp),
     [transactions],
@@ -272,6 +275,11 @@ export default function Page() {
             : undefined
         }
       />
+      <div className="px-4 pt-3 md:px-6">
+        <p className={`rounded-xl border p-3 text-sm font-semibold ${isFirestoreConnected ? "border-green-100 bg-green-50 text-green-700" : "border-red-100 bg-red-50 text-red-700"}`}>
+          {storageStatus}
+        </p>
+      </div>
 
       {screen === "home" && (
         <HomeCards
@@ -608,9 +616,6 @@ export default function Page() {
         <section className="space-y-6 p-4 md:p-6">
           <div className="mx-auto max-w-md rounded-2xl border border-gray-100 bg-white p-5 shadow-sm md:p-8">
             <h3 className="mb-6 text-lg font-bold text-gray-800 md:text-xl">관리자 비밀번호 변경</h3>
-            <p className={`mb-5 rounded-xl border p-3 text-sm font-semibold ${storageStatus === "저장 위치: Firestore" ? "border-green-100 bg-green-50 text-green-700" : "border-red-100 bg-red-50 text-red-700"}`}>
-              {storageStatus}
-            </p>
             <div className="space-y-4">
               <div>
                 <label className="mb-2 block text-sm font-bold text-gray-500">현재 비밀번호</label>
@@ -659,6 +664,7 @@ export default function Page() {
               <button
                 disabled={isAdminActionBusy}
                 onClick={() => {
+                  if (!confirm("Firestore가 비어 있을 때만 기본 교구 시드를 넣습니다. 지금 진행할까요?")) return;
                   void (async () => {
                     try {
                       setIsAdminActionBusy(true);
@@ -677,6 +683,37 @@ export default function Page() {
                 Firestore 기본 데이터 시드
               </button>
             )}
+            <button
+              disabled={isAdminActionBusy}
+              onClick={() => {
+                const warningConfirmed = confirm(
+                  "주의: 이 작업은 Firestore의 현재 교구/대여/관리자 비밀번호 데이터를 기본값으로 덮어씁니다. 계속할까요?",
+                );
+                if (!warningConfirmed) return;
+
+                const finalConfirmed = prompt("정말 진행하려면 '기본값 재시드'를 입력하세요.");
+                if (finalConfirmed !== "기본값 재시드") {
+                  alert("확인 문구가 일치하지 않아 작업을 취소했습니다.");
+                  return;
+                }
+
+                void (async () => {
+                  try {
+                    setIsAdminActionBusy(true);
+                    await forceReseedDefaultsToFirestore();
+                    alert("Firestore 기본 데이터 재시드가 완료되었습니다.");
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : "기본 데이터 재시드에 실패했습니다.";
+                    alert(message);
+                  } finally {
+                    setIsAdminActionBusy(false);
+                  }
+                })();
+              }}
+              className="mt-4 w-full rounded-xl border border-red-200 bg-red-50 py-3 text-base font-bold text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60"
+            >
+              기본 교구를 Firestore에 다시 시드하기 (주의)
+            </button>
             {isFirestoreEmpty && canImportLegacyData && (
               <button
                 disabled={isAdminActionBusy}

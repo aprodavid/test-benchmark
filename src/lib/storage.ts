@@ -28,6 +28,10 @@ export async function seedDefaultsIfFirestoreEmpty() {
   await appStorageService.seedDefaultsIfFirestoreEmpty();
 }
 
+export async function forceReseedDefaultsToFirestore() {
+  await appStorageService.forceReseedDefaultsToFirestore();
+}
+
 export async function getEquipments(_initial?: Equipment[]) {
   return appStorageService.getEquipments();
 }

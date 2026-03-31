@@ -31,9 +31,11 @@ const defaultAdminSettings: AdminSettings = {
 };
 
 function defaultState(): AppState {
+  const clonedDefaultEquipments = DEFAULT_EQUIPMENTS.map((equipment) => ({ ...equipment }));
+
   return {
     schemaVersion: 2,
-    equipments: DEFAULT_EQUIPMENTS,
+    equipments: clonedDefaultEquipments,
     transactions: [],
     adminSettings: defaultAdminSettings,
   };
@@ -296,7 +298,17 @@ export class AppStorageService {
   }
 
   async resetEquipmentsToDefault() {
-    await this.patchState((state) => ({ ...state, equipments: DEFAULT_EQUIPMENTS }));
+    const clonedDefaultEquipments = DEFAULT_EQUIPMENTS.map((equipment) => ({ ...equipment }));
+    await this.patchState((state) => ({ ...state, equipments: clonedDefaultEquipments }));
+  }
+
+  async forceReseedDefaultsToFirestore() {
+    const diagnostics = await this.getDiagnostics();
+    if (!diagnostics.isConnected) {
+      throw new Error("Firebase 연결 오류로 기본 시드를 진행할 수 없습니다.");
+    }
+
+    await writeStateToFirestore(defaultState(), "seed");
   }
 
   async getTransactions() {
