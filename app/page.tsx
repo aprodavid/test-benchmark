@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect } from "react";
 import { Check, ChevronDown, Minus, Plus, Trash2, User } from "lucide-react";
 import { AdminCards, Container, EmptyState, FixedCTA, Header, HomeCards } from "@/components/ui";
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
-import { DEFAULT_ADMIN_PASSWORD, getAdminPassword, getEquipments, getTransactions, setAdminPassword, setEquipments, setTransactions } from "@/lib/storage";
+import { DEFAULT_ADMIN_PASSWORD, getAdminPassword, getEquipments, getTransactions, isAdminPasswordCustomized, resetEquipmentsToDefault, setAdminPassword, setEquipments, setTransactions } from "@/lib/storage";
 import { BorrowTransaction, Equipment, BorrowerMode, Screen } from "@/types/app";
 
 const ICON_OPTIONS = ["📦", "🏀", "⚽", "🏐", "🤸", "➰", "🎽", "🎹", "🎵", "🎶", "🥁", "🎸", "🎺", "🎻", "🎼"];
@@ -34,6 +34,8 @@ export default function Page() {
   const [adminAuthInput, setAdminAuthInput] = useState("");
   const [adminAuthError, setAdminAuthError] = useState("");
   const [adminPassword, setAdminPasswordState] = useState(() => getAdminPassword());
+  const [hasCustomAdminPassword, setHasCustomAdminPassword] = useState(() => isAdminPasswordCustomized());
+  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -207,6 +209,9 @@ export default function Page() {
           <div className="mx-auto max-w-md rounded-2xl border border-gray-100 bg-white p-6 shadow-sm md:p-8">
             <h3 className="mb-3 text-lg font-bold text-gray-800 md:text-xl">관리자 비밀번호 입력</h3>
             <p className="mb-4 text-sm text-gray-500">관리자 메뉴에 들어가려면 비밀번호를 입력하세요.</p>
+            {!hasCustomAdminPassword && (
+              <p className="mb-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm font-medium text-blue-700">초기 관리자 비밀번호는 0000입니다.</p>
+            )}
             <input
               type="password"
               value={adminAuthInput}
@@ -522,19 +527,27 @@ export default function Page() {
             <h3 className="mb-6 text-lg font-bold text-gray-800 md:text-xl">관리자 비밀번호 변경</h3>
             <div className="space-y-4">
               <div>
+                <label className="mb-2 block text-sm font-bold text-gray-500">현재 비밀번호</label>
+                <input type="password" inputMode="numeric" maxLength={4} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value.replace(/\D/g, "").slice(0, 4))} className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-gray-500" placeholder="현재 비밀번호 4자리" />
+              </div>
+              <div>
                 <label className="mb-2 block text-sm font-bold text-gray-500">새 비밀번호</label>
-                <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-gray-500" placeholder="새 비밀번호 입력" />
+                <input type="password" inputMode="numeric" maxLength={4} value={newPassword} onChange={(e) => setNewPassword(e.target.value.replace(/\D/g, "").slice(0, 4))} className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-gray-500" placeholder="새 비밀번호 4자리" />
               </div>
               <div>
                 <label className="mb-2 block text-sm font-bold text-gray-500">새 비밀번호 확인</label>
-                <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-gray-500" placeholder="새 비밀번호 다시 입력" />
+                <input type="password" inputMode="numeric" maxLength={4} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value.replace(/\D/g, "").slice(0, 4))} className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-gray-500" placeholder="새 비밀번호 다시 입력" />
               </div>
               <button
                 onClick={() => {
-                  if (!newPassword) return alert("변경할 비밀번호를 입력해주세요.");
+                  if (!/^\d{4}$/.test(currentPassword)) return alert("현재 비밀번호는 4자리 숫자로 입력해주세요.");
+                  if (currentPassword !== adminPassword) return alert("현재 비밀번호가 올바르지 않습니다.");
+                  if (!/^\d{4}$/.test(newPassword)) return alert("새 비밀번호는 4자리 숫자로 입력해주세요.");
                   if (newPassword !== confirmPassword) return alert("새 비밀번호가 일치하지 않습니다.");
                   setAdminPassword(newPassword);
                   setAdminPasswordState(newPassword);
+                  setHasCustomAdminPassword(true);
+                  setCurrentPassword("");
                   setNewPassword("");
                   setConfirmPassword("");
                   alert("비밀번호가 변경되었습니다!");
@@ -542,7 +555,18 @@ export default function Page() {
                 className="mt-4 w-full rounded-xl bg-gray-800 py-4 text-lg font-bold text-white transition-transform hover:bg-gray-900 active:scale-95"
               >변경하기</button>
             </div>
-            <p className="mt-4 text-xs text-gray-500">초기 비밀번호는 {DEFAULT_ADMIN_PASSWORD}이며, `src/config/security.ts`에서 변경할 수 있습니다.</p>
+            <button
+              onClick={() => {
+                if (!confirm("새 기본 교구 세트로 재설정할까요? 현재 등록된 교구 목록이 교체됩니다.")) return;
+                resetEquipmentsToDefault();
+                setEquipmentsState(getEquipments(DEFAULT_EQUIPMENTS));
+                alert("기본 교구 세트로 재설정되었습니다.");
+              }}
+              className="mt-4 w-full rounded-xl border border-blue-200 bg-blue-50 py-3 text-base font-bold text-blue-700 transition-colors hover:bg-blue-100"
+            >
+              기본 교구 세트로 재설정
+            </button>
+            <p className="mt-4 text-xs text-gray-500">초기 비밀번호는 {DEFAULT_ADMIN_PASSWORD}이며, 사용자 지정 전까지 관리자 진입 화면에 안내됩니다.</p>
           </div>
         </section>
       )}

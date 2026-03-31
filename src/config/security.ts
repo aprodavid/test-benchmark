@@ -1,2 +1,1 @@
-export const ADMIN_DEFAULT_PASSWORD = "admin1234";
-
+export const ADMIN_DEFAULT_PASSWORD = "0000";
