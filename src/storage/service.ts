@@ -1,16 +1,28 @@
 import { ADMIN_DEFAULT_PASSWORD } from "@/config/security";
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
-import { getFirebaseDb } from "@/lib/firebase";
-import { LocalStorageAdapter } from "@/storage/adapters/localStorageAdapter";
+import { getFirestoreDb } from "@/lib/firestore";
 import { AdminSettings, AppState } from "@/storage/types";
 import { BorrowTransaction, Equipment } from "@/types/app";
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import {
+  DocumentData,
+  doc,
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+  Timestamp,
+  Unsubscribe,
+} from "firebase/firestore";
+
+const META_DOC = { col: "meta", id: "app" };
+const ITEMS_DOC = { col: "items", id: "master" };
+const LOANS_DOC = { col: "loans", id: "records" };
+const ADMIN_SETTINGS_DOC = { col: "settings", id: "adminSettings" };
 
 const STORAGE_KEY = "tb.appState.v1";
 const LEGACY_KEY_EQUIPMENTS = "tb.equipments";
 const LEGACY_KEY_TRANSACTIONS = "tb.transactions";
 const LEGACY_KEY_ADMIN_PASSWORD = "tb.adminPassword";
-const MIGRATION_BACKUP_KEY = "tb.firestoreMigrationBackup.v1";
 
 const defaultAdminSettings: AdminSettings = {
   password: ADMIN_DEFAULT_PASSWORD,
@@ -20,7 +32,7 @@ const defaultAdminSettings: AdminSettings = {
 
 function defaultState(): AppState {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     equipments: DEFAULT_EQUIPMENTS,
     transactions: [],
     adminSettings: defaultAdminSettings,
@@ -34,136 +46,245 @@ function normalizeTransactions(transactions: BorrowTransaction[]) {
   }));
 }
 
-function migrateFromLegacyLocalStorage(adapter: LocalStorageAdapter): AppState {
-  const fallback = defaultState();
-  const equipments = adapter.read<Equipment[]>(LEGACY_KEY_EQUIPMENTS, fallback.equipments);
-  const transactions = normalizeTransactions(adapter.read<BorrowTransaction[]>(LEGACY_KEY_TRANSACTIONS, []));
-  const customPassword = adapter.read<string | null>(LEGACY_KEY_ADMIN_PASSWORD, null);
+function toIsoString(input: unknown): string {
+  if (!input) return new Date(0).toISOString();
+  if (typeof input === "string") return input;
+  if (input instanceof Timestamp) return input.toDate().toISOString();
+  if (input instanceof Date) return input.toISOString();
+  return new Date(0).toISOString();
+}
+
+function readLegacyLocalStorage(): AppState | null {
+  if (typeof window === "undefined") return null;
+
+  const readJson = <T>(key: string, fallback: T): T => {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const fromSnapshot = readJson<AppState | null>(STORAGE_KEY, null);
+  if (fromSnapshot) {
+    return {
+      ...fromSnapshot,
+      schemaVersion: 2,
+      transactions: normalizeTransactions(fromSnapshot.transactions ?? []),
+      adminSettings: {
+        ...defaultAdminSettings,
+        ...(fromSnapshot.adminSettings ?? {}),
+        updatedAt: toIsoString(fromSnapshot.adminSettings?.updatedAt),
+      },
+    };
+  }
+
+  const equipments = readJson<Equipment[]>(LEGACY_KEY_EQUIPMENTS, []);
+  const transactions = normalizeTransactions(readJson<BorrowTransaction[]>(LEGACY_KEY_TRANSACTIONS, []));
+  const customPassword = readJson<string | null>(LEGACY_KEY_ADMIN_PASSWORD, null);
+
+  if (equipments.length === 0 && transactions.length === 0 && !customPassword) {
+    return null;
+  }
 
   return {
-    schemaVersion: 1,
-    equipments,
+    schemaVersion: 2,
+    equipments: equipments.length > 0 ? equipments : DEFAULT_EQUIPMENTS,
     transactions,
     adminSettings: {
       password: customPassword ?? ADMIN_DEFAULT_PASSWORD,
-      isCustomized: typeof customPassword === "string" && customPassword.length > 0,
+      isCustomized: Boolean(customPassword),
       updatedAt: customPassword ? new Date().toISOString() : new Date(0).toISOString(),
     },
   };
 }
 
-async function readFromFirestore(): Promise<AppState | null> {
-  const db = getFirebaseDb();
-  if (!db) return null;
+async function readStateFromFirestore(): Promise<AppState | null> {
+  const db = getFirestoreDb();
+  const [metaSnap, itemsSnap, loansSnap, adminSnap] = await Promise.all([
+    getDoc(doc(db, META_DOC.col, META_DOC.id)),
+    getDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id)),
+    getDoc(doc(db, LOANS_DOC.col, LOANS_DOC.id)),
+    getDoc(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id)),
+  ]);
 
-  try {
-    const [metaSnap, equipmentSnap, transactionSnap, adminSnap] = await Promise.all([
-      getDoc(doc(db, "app_meta", "state")),
-      getDoc(doc(db, "equipments", "list")),
-      getDoc(doc(db, "loans", "transactions")),
-      getDoc(doc(db, "settings", "admin")),
-    ]);
-
-    if (!metaSnap.exists() && !equipmentSnap.exists() && !transactionSnap.exists() && !adminSnap.exists()) {
-      return null;
-    }
-
-    const fallback = defaultState();
-    const schemaVersion = (metaSnap.data()?.schemaVersion as number | undefined) ?? 1;
-    const equipments = (equipmentSnap.data()?.items as Equipment[] | undefined) ?? fallback.equipments;
-    const transactions = normalizeTransactions((transactionSnap.data()?.items as BorrowTransaction[] | undefined) ?? []);
-    const adminSettings = (adminSnap.data() as AdminSettings | undefined) ?? fallback.adminSettings;
-
-    return {
-      schemaVersion,
-      equipments,
-      transactions,
-      adminSettings,
-    };
-  } catch (error) {
-    console.warn("[storage] Firestore read failed. Falling back to localStorage.", error);
+  if (!metaSnap.exists() && !itemsSnap.exists() && !loansSnap.exists() && !adminSnap.exists()) {
     return null;
   }
+
+  const fallback = defaultState();
+
+  return {
+    schemaVersion: (metaSnap.data()?.schemaVersion as number | undefined) ?? 2,
+    equipments: (itemsSnap.data()?.items as Equipment[] | undefined) ?? fallback.equipments,
+    transactions: normalizeTransactions((loansSnap.data()?.items as BorrowTransaction[] | undefined) ?? []),
+    adminSettings: {
+      ...fallback.adminSettings,
+      ...(adminSnap.data() as AdminSettings | undefined),
+      updatedAt: toIsoString(adminSnap.data()?.updatedAt),
+    },
+  };
 }
 
-async function writeToFirestore(state: AppState, migratedFromLocalStorage: boolean): Promise<boolean> {
-  const db = getFirebaseDb();
-  if (!db) return false;
+async function writeStateToFirestore(state: AppState, source: "app" | "migration" | "seed") {
+  const db = getFirestoreDb();
 
-  try {
-    await Promise.all([
-      setDoc(doc(db, "app_meta", "state"), {
-        schemaVersion: state.schemaVersion,
-        updatedAt: serverTimestamp(),
-        migratedFromLocalStorage,
-      }, { merge: true }),
-      setDoc(doc(db, "equipments", "list"), {
-        items: state.equipments,
-        updatedAt: serverTimestamp(),
-      }, { merge: true }),
-      setDoc(doc(db, "loans", "transactions"), {
-        items: state.transactions,
-        updatedAt: serverTimestamp(),
-      }, { merge: true }),
-      setDoc(doc(db, "settings", "admin"), {
-        ...state.adminSettings,
-        updatedAt: state.adminSettings.updatedAt,
-      }, { merge: true }),
-    ]);
+  await Promise.all([
+    setDoc(doc(db, META_DOC.col, META_DOC.id), {
+      schemaVersion: state.schemaVersion,
+      source,
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    setDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), {
+      items: state.equipments,
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    setDoc(doc(db, LOANS_DOC.col, LOANS_DOC.id), {
+      items: state.transactions,
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    setDoc(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), {
+      ...state.adminSettings,
+      updatedAt: state.adminSettings.updatedAt,
+    }, { merge: true }),
+  ]);
+}
 
-    return true;
-  } catch (error) {
-    console.warn("[storage] Firestore write failed. Local backup is still updated.", error);
-    return false;
+type SnapshotBundle = {
+  meta: DocumentData | null;
+  items: DocumentData | null;
+  loans: DocumentData | null;
+  admin: DocumentData | null;
+};
+
+function parseSnapshotBundle(bundle: SnapshotBundle): AppState | null {
+  if (!bundle.meta && !bundle.items && !bundle.loans && !bundle.admin) {
+    return null;
   }
+
+  const fallback = defaultState();
+  return {
+    schemaVersion: (bundle.meta?.schemaVersion as number | undefined) ?? 2,
+    equipments: (bundle.items?.items as Equipment[] | undefined) ?? fallback.equipments,
+    transactions: normalizeTransactions((bundle.loans?.items as BorrowTransaction[] | undefined) ?? []),
+    adminSettings: {
+      ...fallback.adminSettings,
+      ...(bundle.admin as AdminSettings | undefined),
+      updatedAt: toIsoString(bundle.admin?.updatedAt),
+    },
+  };
 }
+
+export type FirestoreDiagnostics = {
+  isConnected: boolean;
+  isFirestoreEmpty: boolean;
+  canImportLegacyLocalData: boolean;
+};
 
 export class AppStorageService {
-  private readonly local = new LocalStorageAdapter();
-
-  private readLocalState(): AppState | null {
-    const state = this.local.read<AppState | null>(STORAGE_KEY, null);
-    if (!state) return null;
-
-    return {
-      ...state,
-      transactions: normalizeTransactions(state.transactions ?? []),
-    };
-  }
-
-  private writeLocalState(next: AppState) {
-    this.local.write(STORAGE_KEY, next);
-  }
-
   async loadState(): Promise<AppState> {
-    const firestoreState = await readFromFirestore();
-    if (firestoreState) {
-      this.writeLocalState(firestoreState);
-      return firestoreState;
+    const firestoreState = await readStateFromFirestore();
+    if (!firestoreState) {
+      return defaultState();
     }
 
-    const localState = this.readLocalState();
-    if (localState) {
-      await writeToFirestore(localState, false);
-      return localState;
-    }
+    return firestoreState;
+  }
 
-    const migrated = migrateFromLegacyLocalStorage(this.local);
-    this.local.write(MIGRATION_BACKUP_KEY, migrated);
-    this.writeLocalState(migrated);
-    await writeToFirestore(migrated, true);
+  subscribeAppState(handlers: {
+    onData: (state: AppState) => void;
+    onError?: (error: Error) => void;
+    onEmpty?: () => void;
+  }): Unsubscribe {
+    const db = getFirestoreDb();
+    const bundle: SnapshotBundle = { meta: null, items: null, loans: null, admin: null };
 
-    return migrated;
+    const pushSnapshot = () => {
+      const parsed = parseSnapshotBundle(bundle);
+      if (parsed) {
+        handlers.onData(parsed);
+      } else {
+        handlers.onEmpty?.();
+      }
+    };
+
+    const watchers: Unsubscribe[] = [
+      onSnapshot(doc(db, META_DOC.col, META_DOC.id), (snap) => {
+        bundle.meta = snap.exists() ? snap.data() : null;
+        pushSnapshot();
+      }, (error) => handlers.onError?.(error as Error)),
+      onSnapshot(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), (snap) => {
+        bundle.items = snap.exists() ? snap.data() : null;
+        pushSnapshot();
+      }, (error) => handlers.onError?.(error as Error)),
+      onSnapshot(doc(db, LOANS_DOC.col, LOANS_DOC.id), (snap) => {
+        bundle.loans = snap.exists() ? snap.data() : null;
+        pushSnapshot();
+      }, (error) => handlers.onError?.(error as Error)),
+      onSnapshot(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), (snap) => {
+        bundle.admin = snap.exists() ? snap.data() : null;
+        pushSnapshot();
+      }, (error) => handlers.onError?.(error as Error)),
+    ];
+
+    return () => watchers.forEach((off) => off());
   }
 
   private async patchState(mutator: (state: AppState) => AppState) {
     const current = await this.loadState();
     const next = mutator(current);
+    await writeStateToFirestore(next, "app");
+  }
 
-    this.writeLocalState(next);
-    await writeToFirestore(next, false);
+  async getDiagnostics(): Promise<FirestoreDiagnostics> {
+    try {
+      const firestoreState = await readStateFromFirestore();
+      const legacyState = readLegacyLocalStorage();
 
-    return next;
+      return {
+        isConnected: true,
+        isFirestoreEmpty: !firestoreState,
+        canImportLegacyLocalData: !firestoreState && Boolean(legacyState),
+      };
+    } catch {
+      return {
+        isConnected: false,
+        isFirestoreEmpty: true,
+        canImportLegacyLocalData: false,
+      };
+    }
+  }
+
+  async importLegacyLocalDataToFirestore() {
+    const diagnostics = await this.getDiagnostics();
+    if (!diagnostics.isConnected) {
+      throw new Error("Firebase 연결 오류로 가져오기를 진행할 수 없습니다.");
+    }
+    if (!diagnostics.isFirestoreEmpty) {
+      throw new Error("Firestore에 이미 데이터가 있어 가져오기를 중단했습니다.");
+    }
+
+    const legacy = readLegacyLocalStorage();
+    if (!legacy) {
+      throw new Error("가져올 localStorage 데이터가 없습니다.");
+    }
+
+    await writeStateToFirestore(legacy, "migration");
+  }
+
+  async seedDefaultsIfFirestoreEmpty() {
+    const diagnostics = await this.getDiagnostics();
+    if (!diagnostics.isConnected) {
+      throw new Error("Firebase 연결 오류로 초기 시드를 진행할 수 없습니다.");
+    }
+    if (!diagnostics.isFirestoreEmpty) {
+      return;
+    }
+
+    await writeStateToFirestore(defaultState(), "seed");
   }
 
   async getEquipments() {

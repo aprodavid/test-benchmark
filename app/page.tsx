@@ -4,7 +4,18 @@ import { useMemo, useState, useEffect } from "react";
 import { Check, ChevronDown, Minus, Plus, Trash2, User } from "lucide-react";
 import { AdminCards, Container, EmptyState, FixedCTA, Header, HomeCards } from "@/components/ui";
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
-import { DEFAULT_ADMIN_PASSWORD, loadAppState, resetEquipmentsToDefault, setAdminPassword, setEquipments, setTransactions } from "@/lib/storage";
+import {
+  DEFAULT_ADMIN_PASSWORD,
+  getStorageDiagnostics,
+  importLegacyLocalDataToFirestore,
+  loadAppState,
+  resetEquipmentsToDefault,
+  seedDefaultsIfFirestoreEmpty,
+  setAdminPassword,
+  setEquipments,
+  setTransactions,
+  subscribeAppState,
+} from "@/lib/storage";
 import { BorrowTransaction, Equipment, BorrowerMode, Screen } from "@/types/app";
 
 const ICON_OPTIONS = ["📦", "🏀", "⚽", "🏐", "🤸", "➰", "🎽", "🎹", "🎵", "🎶", "🥁", "🎸", "🎺", "🎻", "🎼"];
@@ -36,6 +47,10 @@ export default function Page() {
   const [adminPassword, setAdminPasswordState] = useState(DEFAULT_ADMIN_PASSWORD);
   const [hasCustomAdminPassword, setHasCustomAdminPassword] = useState(false);
   const [isStorageReady, setIsStorageReady] = useState(false);
+  const [storageStatus, setStorageStatus] = useState("Firestore 연결 확인 중...");
+  const [isFirestoreEmpty, setIsFirestoreEmpty] = useState(false);
+  const [canImportLegacyData, setCanImportLegacyData] = useState(false);
+  const [isAdminActionBusy, setIsAdminActionBusy] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -55,18 +70,59 @@ export default function Page() {
     let alive = true;
 
     void (async () => {
-      const state = await loadAppState();
-      if (!alive) return;
+      try {
+        const state = await loadAppState();
+        if (!alive) return;
 
-      setEquipmentsState(state.equipments);
-      setTransactionsState(state.transactions);
-      setAdminPasswordState(state.adminSettings.password);
-      setHasCustomAdminPassword(state.adminSettings.isCustomized);
-      setIsStorageReady(true);
+        setEquipmentsState(state.equipments);
+        setTransactionsState(state.transactions);
+        setAdminPasswordState(state.adminSettings.password);
+        setHasCustomAdminPassword(state.adminSettings.isCustomized);
+        setStorageStatus("저장 위치: Firestore");
+        setIsStorageReady(true);
+      } catch {
+        if (!alive) return;
+        setStorageStatus("Firebase 연결 오류");
+      }
+
+      try {
+        const diagnostics = await getStorageDiagnostics();
+        if (!alive) return;
+        setIsFirestoreEmpty(diagnostics.isFirestoreEmpty);
+        setCanImportLegacyData(diagnostics.canImportLegacyLocalData);
+        if (!diagnostics.isConnected) {
+          setStorageStatus("Firebase 연결 오류");
+        }
+      } catch {
+        if (!alive) return;
+        setStorageStatus("Firebase 연결 오류");
+      }
     })();
+
+    const unsubscribe = subscribeAppState({
+      onData: (state) => {
+        if (!alive) return;
+        setEquipmentsState(state.equipments);
+        setTransactionsState(state.transactions);
+        setAdminPasswordState(state.adminSettings.password);
+        setHasCustomAdminPassword(state.adminSettings.isCustomized);
+        setStorageStatus("저장 위치: Firestore");
+        setIsStorageReady(true);
+        setIsFirestoreEmpty(false);
+      },
+      onEmpty: () => {
+        if (!alive) return;
+        setIsFirestoreEmpty(true);
+      },
+      onError: () => {
+        if (!alive) return;
+        setStorageStatus("Firebase 연결 오류");
+      },
+    });
 
     return () => {
       alive = false;
+      unsubscribe();
     };
   }, []);
 
@@ -552,6 +608,9 @@ export default function Page() {
         <section className="space-y-6 p-4 md:p-6">
           <div className="mx-auto max-w-md rounded-2xl border border-gray-100 bg-white p-5 shadow-sm md:p-8">
             <h3 className="mb-6 text-lg font-bold text-gray-800 md:text-xl">관리자 비밀번호 변경</h3>
+            <p className={`mb-5 rounded-xl border p-3 text-sm font-semibold ${storageStatus === "저장 위치: Firestore" ? "border-green-100 bg-green-50 text-green-700" : "border-red-100 bg-red-50 text-red-700"}`}>
+              {storageStatus}
+            </p>
             <div className="space-y-4">
               <div>
                 <label className="mb-2 block text-sm font-bold text-gray-500">현재 비밀번호</label>
@@ -596,6 +655,51 @@ export default function Page() {
               기본 교구 세트로 재설정
             </button>
             <p className="mt-4 text-xs text-gray-500">초기 비밀번호는 {DEFAULT_ADMIN_PASSWORD}이며, 사용자 지정 전까지 관리자 진입 화면에 안내됩니다.</p>
+            {isFirestoreEmpty && (
+              <button
+                disabled={isAdminActionBusy}
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      setIsAdminActionBusy(true);
+                      await seedDefaultsIfFirestoreEmpty();
+                      alert("Firestore 초기 시드가 완료되었습니다.");
+                    } catch (error) {
+                      const message = error instanceof Error ? error.message : "초기 시드에 실패했습니다.";
+                      alert(message);
+                    } finally {
+                      setIsAdminActionBusy(false);
+                    }
+                  })();
+                }}
+                className="mt-4 w-full rounded-xl border border-emerald-200 bg-emerald-50 py-3 text-base font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-60"
+              >
+                Firestore 기본 데이터 시드
+              </button>
+            )}
+            {isFirestoreEmpty && canImportLegacyData && (
+              <button
+                disabled={isAdminActionBusy}
+                onClick={() => {
+                  if (!confirm("현재 브라우저 localStorage 데이터를 Firestore로 1회 업로드할까요?")) return;
+                  void (async () => {
+                    try {
+                      setIsAdminActionBusy(true);
+                      await importLegacyLocalDataToFirestore();
+                      alert("localStorage 데이터를 Firestore로 가져왔습니다.");
+                    } catch (error) {
+                      const message = error instanceof Error ? error.message : "데이터 가져오기에 실패했습니다.";
+                      alert(message);
+                    } finally {
+                      setIsAdminActionBusy(false);
+                    }
+                  })();
+                }}
+                className="mt-4 w-full rounded-xl border border-orange-200 bg-orange-50 py-3 text-base font-bold text-orange-700 transition-colors hover:bg-orange-100 disabled:opacity-60"
+              >
+                현재 브라우저 데이터를 Firestore로 가져오기 (1회 초기 업로드)
+              </button>
+            )}
           </div>
         </section>
       )}
