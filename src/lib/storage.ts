@@ -1,10 +1,11 @@
 import { BorrowTransaction, Equipment } from "@/types/app";
+import { ADMIN_DEFAULT_PASSWORD } from "@/config/security";
 
 const KEY_EQUIPMENTS = "tb.equipments";
 const KEY_TRANSACTIONS = "tb.transactions";
 const KEY_ADMIN_PASSWORD = "tb.adminPassword";
 
-export const DEFAULT_ADMIN_PASSWORD = "0000";
+export const DEFAULT_ADMIN_PASSWORD = ADMIN_DEFAULT_PASSWORD;
 
 export function readJson<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -31,7 +32,11 @@ export function setEquipments(next: Equipment[]) {
 }
 
 export function getTransactions() {
-  return readJson<BorrowTransaction[]>(KEY_TRANSACTIONS, []);
+  const transactions = readJson<BorrowTransaction[]>(KEY_TRANSACTIONS, []);
+  return transactions.map((tx) => ({
+    ...tx,
+    borrowPin: typeof tx.borrowPin === "string" ? tx.borrowPin : undefined,
+  }));
 }
 
 export function setTransactions(next: BorrowTransaction[]) {

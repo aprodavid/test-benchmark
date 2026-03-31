@@ -54,4 +54,9 @@
 - `app/page.tsx`: 전체 화면 상태/흐름 제어
 - `src/components/ui.tsx`: 재사용 UI 컴포넌트(헤더/CTA/카드 등)
 - `src/lib/storage.ts`: 로컬 저장소 접근
+- `src/config/security.ts`: 관리자 초기 비밀번호 설정 (`ADMIN_DEFAULT_PASSWORD`)
 - `PLAN.md`, `docs/reference-audit.md`: 관찰 기반 명세 문서
+
+## 관리자 비밀번호 기본값 변경
+- 기본 관리자 비밀번호는 `admin1234`입니다.
+- 코드에서 기본값을 바꾸려면 `src/config/security.ts`의 `ADMIN_DEFAULT_PASSWORD`를 수정하세요.
