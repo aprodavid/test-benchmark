@@ -45,7 +45,7 @@
 - 일부 안내 문구는 의미를 유지하면서 재작성했습니다.
 
 ## 기본 예시 데이터 위치
-기본 예시 물품(농구공 포함)은 아래 파일에 정의되어 있습니다.
+기본 예시 물품(악기 세트)은 아래 파일에 정의되어 있습니다.
 - `src/data/defaultEquipments.ts`
 
 초기 로드 시(`localStorage`에 데이터가 없을 때) 해당 목록으로 시작합니다.
@@ -53,10 +53,19 @@
 ## 주요 구조
 - `app/page.tsx`: 전체 화면 상태/흐름 제어
 - `src/components/ui.tsx`: 재사용 UI 컴포넌트(헤더/CTA/카드 등)
-- `src/lib/storage.ts`: 로컬 저장소 접근
+- `src/lib/storage.ts`: 화면에서 사용하는 저장 API(서비스 래퍼)
+- `src/storage/service.ts`: 앱 저장 상태(AppState) 관리 + 레거시 키 마이그레이션
+- `src/storage/adapters/localStorageAdapter.ts`: 현재 사용 중인 저장 어댑터
+- `src/storage/adapters/firebaseAdapter.ts`: 향후 Firebase 연결용 placeholder
 - `src/config/security.ts`: 관리자 초기 비밀번호 설정 (`ADMIN_DEFAULT_PASSWORD`)
 - `PLAN.md`, `docs/reference-audit.md`: 관찰 기반 명세 문서
 
 ## 관리자 비밀번호 기본값 변경
-- 기본 관리자 비밀번호는 `admin1234`입니다.
+- 기본 관리자 비밀번호는 `0000`입니다.
 - 코드에서 기본값을 바꾸려면 `src/config/security.ts`의 `ADMIN_DEFAULT_PASSWORD`를 수정하세요.
+
+## Firebase로 전환할 때
+1. `.env.example`를 참고해 Firebase 환경변수를 채웁니다.
+2. `src/storage/adapters/firebaseAdapter.ts`의 `read/write`를 Firestore 로직으로 구현합니다.
+3. `src/storage/service.ts` 하단에서 생성하는 어댑터를 `LocalStorageAdapter`에서 `FirebaseAdapter`로 교체합니다.
+4. 화면(`app/page.tsx`)은 `src/lib/storage.ts`를 통해 접근하므로 추가 수정 없이 유지할 수 있습니다.
