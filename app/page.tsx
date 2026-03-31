@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect } from "react";
 import { Check, ChevronDown, Minus, Plus, Trash2, User } from "lucide-react";
 import { AdminCards, Container, EmptyState, FixedCTA, Header, HomeCards } from "@/components/ui";
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
-import { DEFAULT_ADMIN_PASSWORD, getAdminPassword, getEquipments, getTransactions, isAdminPasswordCustomized, resetEquipmentsToDefault, setAdminPassword, setEquipments, setTransactions } from "@/lib/storage";
+import { DEFAULT_ADMIN_PASSWORD, loadAppState, resetEquipmentsToDefault, setAdminPassword, setEquipments, setTransactions } from "@/lib/storage";
 import { BorrowTransaction, Equipment, BorrowerMode, Screen } from "@/types/app";
 
 const ICON_OPTIONS = ["📦", "🏀", "⚽", "🏐", "🤸", "➰", "🎽", "🎹", "🎵", "🎶", "🥁", "🎸", "🎺", "🎻", "🎼"];
@@ -20,8 +20,8 @@ const GRADE_CLASS_OPTIONS: Record<string, number[]> = {
 
 export default function Page() {
   const [screen, setScreen] = useState<Screen>("home");
-  const [equipments, setEquipmentsState] = useState<Equipment[]>(() => getEquipments(DEFAULT_EQUIPMENTS));
-  const [transactions, setTransactionsState] = useState<BorrowTransaction[]>(() => getTransactions());
+  const [equipments, setEquipmentsState] = useState<Equipment[]>(DEFAULT_EQUIPMENTS);
+  const [transactions, setTransactionsState] = useState<BorrowTransaction[]>([]);
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [borrowerMode, setBorrowerMode] = useState<BorrowerMode>("select");
   const [grade, setGrade] = useState("1");
@@ -33,8 +33,9 @@ export default function Page() {
   const [returnPinError, setReturnPinError] = useState("");
   const [adminAuthInput, setAdminAuthInput] = useState("");
   const [adminAuthError, setAdminAuthError] = useState("");
-  const [adminPassword, setAdminPasswordState] = useState(() => getAdminPassword());
-  const [hasCustomAdminPassword, setHasCustomAdminPassword] = useState(() => isAdminPasswordCustomized());
+  const [adminPassword, setAdminPasswordState] = useState(DEFAULT_ADMIN_PASSWORD);
+  const [hasCustomAdminPassword, setHasCustomAdminPassword] = useState(false);
+  const [isStorageReady, setIsStorageReady] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -50,8 +51,34 @@ export default function Page() {
   const borrowerName = borrowerMode === "manual" ? manualName.trim() : `${grade}학년 ${classNum}반`;
   const isBorrowPinValid = /^\d{4}$/.test(borrowPinInput);
 
-  useEffect(() => setEquipments(equipments), [equipments]);
-  useEffect(() => setTransactions(transactions), [transactions]);
+  useEffect(() => {
+    let alive = true;
+
+    void (async () => {
+      const state = await loadAppState();
+      if (!alive) return;
+
+      setEquipmentsState(state.equipments);
+      setTransactionsState(state.transactions);
+      setAdminPasswordState(state.adminSettings.password);
+      setHasCustomAdminPassword(state.adminSettings.isCustomized);
+      setIsStorageReady(true);
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isStorageReady) return;
+    void setEquipments(equipments);
+  }, [equipments, isStorageReady]);
+
+  useEffect(() => {
+    if (!isStorageReady) return;
+    void setTransactions(transactions);
+  }, [transactions, isStorageReady]);
   const borrowedList = useMemo(
     () => transactions.filter((t) => t.status === "borrowed").sort((a, b) => b.timestamp - a.timestamp),
     [transactions],
@@ -544,7 +571,7 @@ export default function Page() {
                   if (currentPassword !== adminPassword) return alert("현재 비밀번호가 올바르지 않습니다.");
                   if (!/^\d{4}$/.test(newPassword)) return alert("새 비밀번호는 4자리 숫자로 입력해주세요.");
                   if (newPassword !== confirmPassword) return alert("새 비밀번호가 일치하지 않습니다.");
-                  setAdminPassword(newPassword);
+                  void setAdminPassword(newPassword);
                   setAdminPasswordState(newPassword);
                   setHasCustomAdminPassword(true);
                   setCurrentPassword("");
@@ -558,9 +585,11 @@ export default function Page() {
             <button
               onClick={() => {
                 if (!confirm("새 기본 교구 세트로 재설정할까요? 현재 등록된 교구 목록이 교체됩니다.")) return;
-                resetEquipmentsToDefault();
-                setEquipmentsState(getEquipments(DEFAULT_EQUIPMENTS));
-                alert("기본 교구 세트로 재설정되었습니다.");
+                void (async () => {
+                  await resetEquipmentsToDefault();
+                  setEquipmentsState(DEFAULT_EQUIPMENTS);
+                  alert("기본 교구 세트로 재설정되었습니다.");
+                })();
               }}
               className="mt-4 w-full rounded-xl border border-blue-200 bg-blue-50 py-3 text-base font-bold text-blue-700 transition-colors hover:bg-blue-100"
             >

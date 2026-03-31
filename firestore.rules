@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ------------------------------------------------------------------
+    // Alpha 테스트용 (빠른 검증)
+    // - 배포 전 아래 운영용 규칙으로 교체 권장
+    // ------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+    // ------------------------------------------------------------------
+    // 운영용 초안 (예시)
+    // - Firebase Authentication + 커스텀 클레임(admin) 전제
+    // - 실제 운영 시 위 Alpha 규칙을 삭제하고 아래 블록만 사용
+    // ------------------------------------------------------------------
+    // function isAdmin() {
+    //   return request.auth != null && request.auth.token.admin == true;
+    // }
+    //
+    // match /app_meta/{docId} {
+    //   allow read: if request.auth != null;
+    //   allow write: if isAdmin();
+    // }
+    //
+    // match /equipments/{docId} {
+    //   allow read: if request.auth != null;
+    //   allow write: if isAdmin();
+    // }
+    //
+    // match /loans/{docId} {
+    //   allow read: if request.auth != null;
+    //   allow write: if request.auth != null;
+    // }
+    //
+    // match /settings/{docId} {
+    //   allow read, write: if isAdmin();
+    // }
+  }
+}
