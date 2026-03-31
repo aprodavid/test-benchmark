@@ -8,6 +8,26 @@ export async function loadAppState() {
   return appStorageService.loadState();
 }
 
+export function subscribeAppState(params: {
+  onData: (state: Awaited<ReturnType<typeof loadAppState>>) => void;
+  onError?: (error: Error) => void;
+  onEmpty?: () => void;
+}) {
+  return appStorageService.subscribeAppState(params);
+}
+
+export async function getStorageDiagnostics() {
+  return appStorageService.getDiagnostics();
+}
+
+export async function importLegacyLocalDataToFirestore() {
+  await appStorageService.importLegacyLocalDataToFirestore();
+}
+
+export async function seedDefaultsIfFirestoreEmpty() {
+  await appStorageService.seedDefaultsIfFirestoreEmpty();
+}
+
 export async function getEquipments(_initial?: Equipment[]) {
   return appStorageService.getEquipments();
 }
