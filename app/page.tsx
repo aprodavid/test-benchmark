@@ -7,6 +7,17 @@ import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
 import { DEFAULT_ADMIN_PASSWORD, getAdminPassword, getEquipments, getTransactions, setAdminPassword, setEquipments, setTransactions } from "@/lib/storage";
 import { BorrowTransaction, Equipment, BorrowerMode, Screen } from "@/types/app";
 
+const ICON_OPTIONS = ["📦", "🏀", "⚽", "🏐", "🤸", "➰", "🎽", "🎹", "🎵", "🎶", "🥁", "🎸", "🎺", "🎻", "🎼"];
+
+const GRADE_CLASS_OPTIONS: Record<string, number[]> = {
+  "1": [1, 2, 3, 4, 5, 6],
+  "2": [1, 2, 3, 4, 5, 6],
+  "3": [1, 2, 3, 4, 5],
+  "4": [1, 2, 3, 4, 5],
+  "5": [1, 2, 3, 4],
+  "6": [1, 2, 3, 4],
+};
+
 export default function Page() {
   const [screen, setScreen] = useState<Screen>("home");
   const [equipments, setEquipmentsState] = useState<Equipment[]>(() => getEquipments(DEFAULT_EQUIPMENTS));
@@ -16,7 +27,12 @@ export default function Page() {
   const [grade, setGrade] = useState("1");
   const [classNum, setClassNum] = useState("1");
   const [manualName, setManualName] = useState("");
+  const [borrowPinInput, setBorrowPinInput] = useState("");
   const [selectedReturnIds, setSelectedReturnIds] = useState<string[]>([]);
+  const [returnPinInput, setReturnPinInput] = useState("");
+  const [returnPinError, setReturnPinError] = useState("");
+  const [adminAuthInput, setAdminAuthInput] = useState("");
+  const [adminAuthError, setAdminAuthError] = useState("");
   const [adminPassword, setAdminPasswordState] = useState(() => getAdminPassword());
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -28,9 +44,12 @@ export default function Page() {
   const [newQuantity, setNewQuantity] = useState(1);
   const [newTracked, setNewTracked] = useState(true);
 
+  const classOptions = GRADE_CLASS_OPTIONS[grade] ?? [];
+  const borrowerName = borrowerMode === "manual" ? manualName.trim() : `${grade}학년 ${classNum}반`;
+  const isBorrowPinValid = /^\d{4}$/.test(borrowPinInput);
+
   useEffect(() => setEquipments(equipments), [equipments]);
   useEffect(() => setTransactions(transactions), [transactions]);
-
   const borrowedList = useMemo(
     () => transactions.filter((t) => t.status === "borrowed").sort((a, b) => b.timestamp - a.timestamp),
     [transactions],
@@ -47,7 +66,10 @@ export default function Page() {
     setSelected({});
     setBorrowerMode("select");
     setManualName("");
+    setBorrowPinInput("");
     setSelectedReturnIds([]);
+    setReturnPinInput("");
+    setReturnPinError("");
   };
 
   const moveHome = () => {
@@ -55,11 +77,13 @@ export default function Page() {
     setScreen("home");
   };
 
-  const borrowerName = borrowerMode === "manual" ? manualName.trim() : `${grade}학년 ${classNum}반`;
-
   const completeBorrow = () => {
     if (!borrowerName) {
       alert("대여자 정보를 입력해주세요.");
+      return;
+    }
+    if (!isBorrowPinValid) {
+      alert("대여 비밀번호는 4자리 숫자로 입력해주세요.");
       return;
     }
     setIsBusy(true);
@@ -72,6 +96,7 @@ export default function Page() {
         equipmentName: equipment?.name ?? "알 수 없는 물품",
         borrowedQuantity: qty,
         borrowerName,
+        borrowPin: borrowPinInput,
         status: "borrowed" as const,
         timestamp: now,
       };
@@ -86,15 +111,38 @@ export default function Page() {
   };
 
   const completeReturn = () => {
+    const selectedRows = borrowedList.filter((tx) => selectedReturnIds.includes(tx.id));
+    const hasPinProtectedRow = selectedRows.some((tx) => !!tx.borrowPin);
+    if (hasPinProtectedRow && !/^\d{4}$/.test(returnPinInput)) {
+      setReturnPinError("4자리 숫자 비밀번호를 입력해주세요.");
+      return;
+    }
+
+    const mismatched = selectedRows.some((tx) => tx.borrowPin && tx.borrowPin !== returnPinInput);
+    if (mismatched) {
+      setReturnPinError("비밀번호가 일치하지 않습니다.");
+      return;
+    }
+
     setIsBusy(true);
     const idSet = new Set(selectedReturnIds);
     setTransactionsState((prev) => prev.map((tx) => (idSet.has(tx.id) ? { ...tx, status: "returned" as const } : tx)));
     setIsBusy(false);
+    setReturnPinInput("");
+    setReturnPinError("");
     setSuccessMessage("반납 처리가 완료되었습니다!");
     setTimeout(() => {
       setSuccessMessage("");
       moveHome();
     }, 1000);
+  };
+
+  const handleGradeChange = (nextGrade: string) => {
+    setGrade(nextGrade);
+    const nextClassOptions = GRADE_CLASS_OPTIONS[nextGrade] ?? [];
+    if (!nextClassOptions.includes(Number(classNum)) && nextClassOptions[0]) {
+      setClassNum(String(nextClassOptions[0]));
+    }
   };
 
   return (
@@ -111,12 +159,82 @@ export default function Page() {
         }
         onBack={
           screen !== "home"
-            ? () => setScreen(screen === "admin_home" ? "home" : screen.startsWith("admin") ? "admin_home" : "home")
+            ? () => {
+              if (screen === "admin_home" || screen === "admin_auth") {
+                setAdminAuthInput("");
+                setAdminAuthError("");
+                setScreen("home");
+                return;
+              }
+              if (screen === "borrow_qty") {
+                setScreen("borrow_select");
+                return;
+              }
+              if (screen === "borrow_user") {
+                setScreen("borrow_qty");
+                return;
+              }
+              if (screen === "borrow_pin") {
+                setScreen("borrow_user");
+                return;
+              }
+              if (screen === "return_pin") {
+                setScreen("return_select");
+                return;
+              }
+              setScreen(screen.startsWith("admin") ? "admin_home" : "home");
+            }
             : undefined
         }
       />
 
-      {screen === "home" && <HomeCards onGo={(next) => setScreen(next as Screen)} />}
+      {screen === "home" && (
+        <HomeCards
+          onGo={(next) => {
+            if (next === "admin_home") {
+              setAdminAuthInput("");
+              setAdminAuthError("");
+              setScreen("admin_auth");
+              return;
+            }
+            setScreen(next as Screen);
+          }}
+        />
+      )}
+
+      {screen === "admin_auth" && (
+        <section className="p-4 md:p-6">
+          <div className="mx-auto max-w-md rounded-2xl border border-gray-100 bg-white p-6 shadow-sm md:p-8">
+            <h3 className="mb-3 text-lg font-bold text-gray-800 md:text-xl">관리자 비밀번호 입력</h3>
+            <p className="mb-4 text-sm text-gray-500">관리자 메뉴에 들어가려면 비밀번호를 입력하세요.</p>
+            <input
+              type="password"
+              value={adminAuthInput}
+              onChange={(e) => {
+                setAdminAuthInput(e.target.value);
+                setAdminAuthError("");
+              }}
+              className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-gray-500"
+              placeholder="비밀번호"
+            />
+            {adminAuthError && <p className="mt-3 text-sm font-medium text-red-500">{adminAuthError}</p>}
+            <button
+              onClick={() => {
+                if (adminAuthInput !== adminPassword) {
+                  setAdminAuthError("비밀번호가 올바르지 않습니다.");
+                  return;
+                }
+                setAdminAuthInput("");
+                setAdminAuthError("");
+                setScreen("admin_home");
+              }}
+              className="mt-5 w-full rounded-xl bg-gray-800 py-4 text-lg font-bold text-white transition-transform hover:bg-gray-900 active:scale-95"
+            >
+              관리자 메뉴로 이동
+            </button>
+          </div>
+        </section>
+      )}
 
       {screen === "borrow_select" && (
         <section className="space-y-4 p-4 md:p-6">
@@ -201,7 +319,7 @@ export default function Page() {
                 <div className="flex-1">
                   <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500 md:text-sm">학년 (Grade)</label>
                   <div className="relative">
-                    <select value={grade} onChange={(e) => setGrade(e.target.value)} className="w-full appearance-none rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-green-500 md:p-5 md:text-xl">
+                    <select value={grade} onChange={(e) => handleGradeChange(e.target.value)} className="w-full appearance-none rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-green-500 md:p-5 md:text-xl">
                       {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}학년</option>)}
                     </select>
                     <ChevronDown className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
@@ -211,7 +329,7 @@ export default function Page() {
                   <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500 md:text-sm">반 (Class)</label>
                   <div className="relative">
                     <select value={classNum} onChange={(e) => setClassNum(e.target.value)} className="w-full appearance-none rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-green-500 md:p-5 md:text-xl">
-                      {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}반</option>)}
+                      {classOptions.map((n) => <option key={n} value={n}>{n}반</option>)}
                     </select>
                     <ChevronDown className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                   </div>
@@ -237,7 +355,28 @@ export default function Page() {
               </ul>
             </div>
           </div>
-          <FixedCTA label="대여 완료하기" color="green" loading={isBusy} disabled={!borrowerName} onClick={completeBorrow} />
+          <FixedCTA label="다음 단계로" color="green" disabled={!borrowerName} onClick={() => setScreen("borrow_pin")} />
+        </section>
+      )}
+
+      {screen === "borrow_pin" && (
+        <section className="space-y-6 p-4 md:p-6">
+          <div className="mx-auto max-w-md rounded-2xl border border-gray-100 bg-white p-6 shadow-sm md:p-8">
+            <h3 className="mb-3 text-lg font-bold text-gray-800 md:text-xl">대여 비밀번호 입력</h3>
+            <p className="mb-4 text-sm text-gray-600">4자리 숫자를 써주세요. 반납을 할 때 사용할 비밀번호입니다.</p>
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              value={borrowPinInput}
+              onChange={(e) => setBorrowPinInput(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="4자리 숫자"
+              className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-center text-2xl font-bold tracking-[0.4em] outline-none focus:ring-2 focus:ring-green-500"
+            />
+            <p className="mt-3 text-sm text-gray-500">정확히 4자리 숫자를 입력해야 대여를 완료할 수 있습니다.</p>
+          </div>
+          <FixedCTA label="대여 완료하기" color="green" loading={isBusy} disabled={!isBorrowPinValid} onClick={completeBorrow} />
         </section>
       )}
 
@@ -263,7 +402,38 @@ export default function Page() {
               })}
             </div>
           )}
-          {borrowedList.length > 0 && <FixedCTA label={`선택한 ${selectedReturnIds.length}건 반납 완료`} color="red" loading={isBusy} disabled={selectedReturnIds.length === 0} onClick={completeReturn} />}
+          {borrowedList.length > 0 && <FixedCTA label={`선택한 ${selectedReturnIds.length}건 다음 단계`} color="red" disabled={selectedReturnIds.length === 0} onClick={() => {
+            setReturnPinInput("");
+            setReturnPinError("");
+            setScreen("return_pin");
+          }} />}
+        </section>
+      )}
+
+      {screen === "return_pin" && (
+        <section className="space-y-6 p-4 md:p-6">
+          <div className="mx-auto max-w-md rounded-2xl border border-gray-100 bg-white p-6 shadow-sm md:p-8">
+            <h3 className="mb-3 text-lg font-bold text-gray-800 md:text-xl">반납 비밀번호 확인</h3>
+            <p className="mb-4 text-sm text-gray-600">대여 시 입력한 4자리 숫자 비밀번호를 입력해주세요.</p>
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              value={returnPinInput}
+              onChange={(e) => {
+                setReturnPinInput(e.target.value.replace(/\D/g, "").slice(0, 4));
+                setReturnPinError("");
+              }}
+              placeholder="4자리 숫자"
+              className="w-full rounded-xl border border-gray-200 bg-gray-50 p-4 text-center text-2xl font-bold tracking-[0.4em] outline-none focus:ring-2 focus:ring-red-500"
+            />
+            {returnPinError && <p className="mt-3 text-sm font-medium text-red-500">{returnPinError}</p>}
+            {borrowedList.filter((tx) => selectedReturnIds.includes(tx.id)).some((tx) => !tx.borrowPin) && (
+              <p className="mt-3 text-xs text-gray-500">기존 데이터(비밀번호 미설정)는 입력값과 무관하게 반납됩니다.</p>
+            )}
+          </div>
+          <FixedCTA label={`선택한 ${selectedReturnIds.length}건 반납 완료`} color="red" loading={isBusy} onClick={completeReturn} />
         </section>
       )}
 
@@ -275,7 +445,15 @@ export default function Page() {
             <h3 className="mb-4 text-lg font-bold text-gray-800 md:text-xl">새 물품 추가</h3>
             <div className="space-y-4">
               <div className="flex gap-4">
-                <input value={newEmoji} onChange={(e) => setNewEmoji(e.target.value || "📦")} className="w-24 rounded-xl border border-gray-200 bg-gray-50 p-4 text-center text-2xl font-bold" aria-label="아이콘" />
+                <div className="w-28">
+                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">아이콘</label>
+                  <div className="relative">
+                    <select value={newEmoji} onChange={(e) => setNewEmoji(e.target.value || "📦")} className="w-full appearance-none rounded-xl border border-gray-200 bg-gray-50 p-4 pr-10 text-center text-3xl font-bold outline-none focus:ring-2 focus:ring-blue-500" aria-label="아이콘">
+                      {ICON_OPTIONS.map((icon) => <option key={icon} value={icon}>{icon}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  </div>
+                </div>
                 <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="물품명 (예: 배드민턴 채)" className="flex-1 rounded-xl border border-gray-200 bg-gray-50 p-4 text-lg font-bold outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
               <div className="flex items-center gap-4">
@@ -364,7 +542,7 @@ export default function Page() {
                 className="mt-4 w-full rounded-xl bg-gray-800 py-4 text-lg font-bold text-white transition-transform hover:bg-gray-900 active:scale-95"
               >변경하기</button>
             </div>
-            <p className="mt-4 text-xs text-gray-500">현재 저장된 비밀번호: {adminPassword}</p>
+            <p className="mt-4 text-xs text-gray-500">초기 비밀번호는 {DEFAULT_ADMIN_PASSWORD}이며, `src/config/security.ts`에서 변경할 수 있습니다.</p>
           </div>
         </section>
       )}

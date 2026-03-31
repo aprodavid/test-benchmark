@@ -1,9 +1,12 @@
 export type Screen =
   | "home"
+  | "admin_auth"
   | "borrow_select"
   | "borrow_qty"
   | "borrow_user"
+  | "borrow_pin"
   | "return_select"
+  | "return_pin"
   | "admin_home"
   | "admin_equipments"
   | "admin_history"
@@ -27,6 +30,7 @@ export type BorrowTransaction = {
   equipmentName: string;
   borrowedQuantity: number;
   borrowerName: string;
+  borrowPin?: string;
   status: TransactionStatus;
   timestamp: number;
 };
