@@ -2,22 +2,23 @@ import { ADMIN_DEFAULT_PASSWORD } from "@/config/security";
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
 import { getFirestoreDb } from "@/lib/firestore";
 import { AdminSettings, AppState } from "@/storage/types";
-import { BorrowTransaction, Equipment } from "@/types/app";
+import { EquipmentItem, LoanReservation } from "@/types/app";
 import {
   DocumentData,
+  Timestamp,
   doc,
   getDoc,
   onSnapshot,
   serverTimestamp,
   setDoc,
-  Timestamp,
   Unsubscribe,
 } from "firebase/firestore";
 
 const META_DOC = { col: "meta", id: "app" };
 const ITEMS_DOC = { col: "items", id: "master" };
-const LOANS_DOC = { col: "loans", id: "records" };
+const RESERVATIONS_DOC = { col: "reservations", id: "records" };
 const ADMIN_SETTINGS_DOC = { col: "settings", id: "adminSettings" };
+const LEGACY_LOANS_DOC = { col: "loans", id: "records" };
 
 const defaultAdminSettings: AdminSettings = {
   password: ADMIN_DEFAULT_PASSWORD,
@@ -26,21 +27,12 @@ const defaultAdminSettings: AdminSettings = {
 };
 
 function defaultState(): AppState {
-  const clonedDefaultEquipments = DEFAULT_EQUIPMENTS.map((equipment) => ({ ...equipment }));
-
   return {
-    schemaVersion: 2,
-    equipments: clonedDefaultEquipments,
-    transactions: [],
+    schemaVersion: 3,
+    items: DEFAULT_EQUIPMENTS.map((item) => ({ ...item })),
+    reservations: [],
     adminSettings: defaultAdminSettings,
   };
-}
-
-function normalizeTransactions(transactions: BorrowTransaction[]) {
-  return transactions.map((tx) => ({
-    ...tx,
-    borrowPin: typeof tx.borrowPin === "string" ? tx.borrowPin : undefined,
-  }));
 }
 
 function toIsoString(input: unknown): string {
@@ -51,25 +43,57 @@ function toIsoString(input: unknown): string {
   return new Date(0).toISOString();
 }
 
+const DEFAULT_EMOJI_BY_ID: Record<string, string> = Object.fromEntries(
+  DEFAULT_EQUIPMENTS.map((item) => [item.id, item.emoji]),
+);
+
+function sanitizeEmoji(rawEmoji: unknown, itemId: string): string {
+  const fallback = DEFAULT_EMOJI_BY_ID[itemId] ?? "📦";
+  if (typeof rawEmoji !== "string") return fallback;
+  const trimmed = rawEmoji.trim();
+  if (!trimmed || trimmed.includes("�")) return fallback;
+  return trimmed;
+}
+
+function sanitizeItems(input: EquipmentItem[]): EquipmentItem[] {
+  return input.map((item) => ({
+    ...item,
+    emoji: sanitizeEmoji(item.emoji, item.id),
+    totalQuantity: Math.max(1, Number(item.totalQuantity) || 1),
+  }));
+}
+
+function sanitizeReservations(input: LoanReservation[]): LoanReservation[] {
+  return input
+    .filter((row) => row && row.itemId && row.startAt && row.endAt)
+    .map((row) => ({
+      ...row,
+      quantity: Math.max(1, Number(row.quantity) || 1),
+      note: row.note?.trim() ? row.note.trim() : "",
+      createdAt: toIsoString(row.createdAt),
+      startAt: toIsoString(row.startAt),
+      endAt: toIsoString(row.endAt),
+    }));
+}
+
 async function readStateFromFirestore(): Promise<AppState | null> {
   const db = getFirestoreDb();
-  const [metaSnap, itemsSnap, loansSnap, adminSnap] = await Promise.all([
+  const [metaSnap, itemsSnap, reservationsSnap, adminSnap] = await Promise.all([
     getDoc(doc(db, META_DOC.col, META_DOC.id)),
     getDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id)),
-    getDoc(doc(db, LOANS_DOC.col, LOANS_DOC.id)),
+    getDoc(doc(db, RESERVATIONS_DOC.col, RESERVATIONS_DOC.id)),
     getDoc(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id)),
   ]);
 
-  if (!metaSnap.exists() && !itemsSnap.exists() && !loansSnap.exists() && !adminSnap.exists()) {
+  if (!metaSnap.exists() && !itemsSnap.exists() && !reservationsSnap.exists() && !adminSnap.exists()) {
     return null;
   }
 
   const fallback = defaultState();
-
   return {
-    schemaVersion: (metaSnap.data()?.schemaVersion as number | undefined) ?? 2,
-    equipments: sanitizeEquipments((itemsSnap.data()?.items as Equipment[] | undefined) ?? fallback.equipments),
-    transactions: normalizeTransactions((loansSnap.data()?.items as BorrowTransaction[] | undefined) ?? []),
+    schemaVersion: (metaSnap.data()?.schemaVersion as number | undefined) ?? 3,
+    items: sanitizeItems((itemsSnap.data()?.items as EquipmentItem[] | undefined) ?? fallback.items),
+    reservations: sanitizeReservations((reservationsSnap.data()?.items as LoanReservation[] | undefined) ?? []),
     adminSettings: {
       ...fallback.adminSettings,
       ...(adminSnap.data() as AdminSettings | undefined),
@@ -80,45 +104,26 @@ async function readStateFromFirestore(): Promise<AppState | null> {
 
 async function writeStateToFirestore(state: AppState, source: "app" | "seed") {
   const db = getFirestoreDb();
-
-  await withWriteTimeout(Promise.all([
-    setDoc(doc(db, META_DOC.col, META_DOC.id), {
-      schemaVersion: state.schemaVersion,
-      source,
-      updatedAt: serverTimestamp(),
-    }, { merge: true }),
-    setDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), {
-      items: state.equipments,
-      updatedAt: serverTimestamp(),
-    }, { merge: true }),
-    setDoc(doc(db, LOANS_DOC.col, LOANS_DOC.id), {
-      items: state.transactions,
-      updatedAt: serverTimestamp(),
-    }, { merge: true }),
+  await Promise.all([
+    setDoc(doc(db, META_DOC.col, META_DOC.id), { schemaVersion: 3, source, updatedAt: serverTimestamp() }, { merge: true }),
+    setDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), { items: state.items, updatedAt: serverTimestamp() }, { merge: true }),
+    setDoc(doc(db, RESERVATIONS_DOC.col, RESERVATIONS_DOC.id), { items: state.reservations, updatedAt: serverTimestamp() }, { merge: true }),
     setDoc(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), {
       ...state.adminSettings,
       updatedAt: state.adminSettings.updatedAt,
     }, { merge: true }),
-  ]), "Firestore 저장");
+  ]);
 }
 
-type SnapshotBundle = {
-  meta: DocumentData | null;
-  items: DocumentData | null;
-  loans: DocumentData | null;
-  admin: DocumentData | null;
-};
+type SnapshotBundle = { meta: DocumentData | null; items: DocumentData | null; reservations: DocumentData | null; admin: DocumentData | null };
 
-function parseSnapshotBundle(bundle: SnapshotBundle): AppState | null {
-  if (!bundle.meta && !bundle.items && !bundle.loans && !bundle.admin) {
-    return null;
-  }
-
+function parseBundle(bundle: SnapshotBundle): AppState | null {
+  if (!bundle.meta && !bundle.items && !bundle.reservations && !bundle.admin) return null;
   const fallback = defaultState();
   return {
-    schemaVersion: (bundle.meta?.schemaVersion as number | undefined) ?? 2,
-    equipments: sanitizeEquipments((bundle.items?.items as Equipment[] | undefined) ?? fallback.equipments),
-    transactions: normalizeTransactions((bundle.loans?.items as BorrowTransaction[] | undefined) ?? []),
+    schemaVersion: (bundle.meta?.schemaVersion as number | undefined) ?? 3,
+    items: sanitizeItems((bundle.items?.items as EquipmentItem[] | undefined) ?? fallback.items),
+    reservations: sanitizeReservations((bundle.reservations?.items as LoanReservation[] | undefined) ?? []),
     adminSettings: {
       ...fallback.adminSettings,
       ...(bundle.admin as AdminSettings | undefined),
@@ -127,105 +132,36 @@ function parseSnapshotBundle(bundle: SnapshotBundle): AppState | null {
   };
 }
 
-export type FirestoreDiagnostics = {
-  isConnected: boolean;
-  isFirestoreEmpty: boolean;
+export type FirestoreDiagnostics = { isConnected: boolean; isFirestoreEmpty: boolean };
+
+export type InventorySummary = {
+  itemId: string;
+  itemName: string;
+  totalQuantity: number;
+  activeQuantity: number;
+  availableQuantity: number;
+  latestPlace: string;
 };
-
-export type FirestoreStateAudit = {
-  schemaVersion: number;
-  equipmentCount: number;
-  borrowedCount: number;
-  returnedCount: number;
-  activeBorrowByEquipment: Array<{ equipmentId: string; name: string; borrowedQuantity: number }>;
-  suspectedTestLoanCount: number;
-  hasBrokenEmoji: boolean;
-};
-
-const DEFAULT_EMOJI_BY_ID: Record<string, string> = Object.fromEntries(
-  DEFAULT_EQUIPMENTS.map((equipment) => [equipment.id, equipment.emoji]),
-);
-
-const WRITE_TIMEOUT_MS = 10_000;
-
-function withWriteTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      const timer = setTimeout(() => {
-        clearTimeout(timer);
-        reject(new Error(`${label} 요청이 제한 시간(10초)을 초과했습니다. 네트워크 연결을 확인해주세요.`));
-      }, WRITE_TIMEOUT_MS);
-    }),
-  ]);
-}
-
-function sanitizeEmoji(rawEmoji: unknown, equipmentId: string): string {
-  const fallback = DEFAULT_EMOJI_BY_ID[equipmentId] ?? "📦";
-  if (typeof rawEmoji !== "string") return fallback;
-  const normalized = rawEmoji.trim();
-  if (!normalized || normalized.includes("�")) return fallback;
-  return normalized;
-}
-
-function sanitizeEquipments(input: Equipment[]): Equipment[] {
-  return input.map((equipment) => ({
-    ...equipment,
-    emoji: sanitizeEmoji(equipment.emoji, equipment.id),
-    totalQuantity: Math.max(1, Number(equipment.totalQuantity) || 1),
-    isQuantityTracked: Boolean(equipment.isQuantityTracked),
-  }));
-}
-
-function isLikelyTestLoan(loan: BorrowTransaction) {
-  const text = `${loan.borrowerName} ${loan.equipmentName}`.toLowerCase();
-  return ["test", "테스트", "sample", "샘플", "dummy", "qa", "debug"].some((keyword) => text.includes(keyword));
-}
 
 export class AppStorageService {
   async loadState(): Promise<AppState> {
-    const firestoreState = await readStateFromFirestore();
-    if (!firestoreState) {
-      return defaultState();
-    }
-
-    return firestoreState;
+    return (await readStateFromFirestore()) ?? defaultState();
   }
 
-  subscribeAppState(handlers: {
-    onData: (state: AppState) => void;
-    onError?: (error: Error) => void;
-    onEmpty?: () => void;
-  }): Unsubscribe {
+  subscribeAppState(handlers: { onData: (state: AppState) => void; onError?: (error: Error) => void; onEmpty?: () => void }): Unsubscribe {
     const db = getFirestoreDb();
-    const bundle: SnapshotBundle = { meta: null, items: null, loans: null, admin: null };
-
-    const pushSnapshot = () => {
-      const parsed = parseSnapshotBundle(bundle);
-      if (parsed) {
-        handlers.onData(parsed);
-      } else {
-        handlers.onEmpty?.();
-      }
+    const bundle: SnapshotBundle = { meta: null, items: null, reservations: null, admin: null };
+    const push = () => {
+      const parsed = parseBundle(bundle);
+      if (parsed) handlers.onData(parsed);
+      else handlers.onEmpty?.();
     };
 
-    const watchers: Unsubscribe[] = [
-      onSnapshot(doc(db, META_DOC.col, META_DOC.id), (snap) => {
-        bundle.meta = snap.exists() ? snap.data() : null;
-        pushSnapshot();
-      }, (error) => handlers.onError?.(error as Error)),
-      onSnapshot(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), (snap) => {
-        bundle.items = snap.exists() ? snap.data() : null;
-        pushSnapshot();
-      }, (error) => handlers.onError?.(error as Error)),
-      onSnapshot(doc(db, LOANS_DOC.col, LOANS_DOC.id), (snap) => {
-        bundle.loans = snap.exists() ? snap.data() : null;
-        pushSnapshot();
-      }, (error) => handlers.onError?.(error as Error)),
-      onSnapshot(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), (snap) => {
-        bundle.admin = snap.exists() ? snap.data() : null;
-        pushSnapshot();
-      }, (error) => handlers.onError?.(error as Error)),
+    const watchers = [
+      onSnapshot(doc(db, META_DOC.col, META_DOC.id), (snap) => { bundle.meta = snap.exists() ? snap.data() : null; push(); }, (e) => handlers.onError?.(e as Error)),
+      onSnapshot(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), (snap) => { bundle.items = snap.exists() ? snap.data() : null; push(); }, (e) => handlers.onError?.(e as Error)),
+      onSnapshot(doc(db, RESERVATIONS_DOC.col, RESERVATIONS_DOC.id), (snap) => { bundle.reservations = snap.exists() ? snap.data() : null; push(); }, (e) => handlers.onError?.(e as Error)),
+      onSnapshot(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), (snap) => { bundle.admin = snap.exists() ? snap.data() : null; push(); }, (e) => handlers.onError?.(e as Error)),
     ];
 
     return () => watchers.forEach((off) => off());
@@ -233,132 +169,50 @@ export class AppStorageService {
 
   private async patchState(mutator: (state: AppState) => AppState) {
     const current = await this.loadState();
-    const next = mutator(current);
-    await writeStateToFirestore(next, "app");
+    await writeStateToFirestore(mutator(current), "app");
   }
 
   async getDiagnostics(): Promise<FirestoreDiagnostics> {
     try {
-      const firestoreState = await readStateFromFirestore();
-
-      return {
-        isConnected: true,
-        isFirestoreEmpty: !firestoreState,
-      };
+      const state = await readStateFromFirestore();
+      return { isConnected: true, isFirestoreEmpty: !state };
     } catch {
-      return {
-        isConnected: false,
-        isFirestoreEmpty: true,
-      };
+      return { isConnected: false, isFirestoreEmpty: true };
     }
   }
 
   async seedDefaultsIfFirestoreEmpty() {
-    const diagnostics = await this.getDiagnostics();
-    if (!diagnostics.isConnected) {
-      throw new Error("Firebase 연결 오류로 초기 시드를 진행할 수 없습니다.");
-    }
-    if (!diagnostics.isFirestoreEmpty) {
-      return;
-    }
-
+    const d = await this.getDiagnostics();
+    if (!d.isConnected) throw new Error("Firestore 연결 오류");
+    if (!d.isFirestoreEmpty) return;
     await writeStateToFirestore(defaultState(), "seed");
-  }
-
-  async getEquipments() {
-    return (await this.loadState()).equipments;
-  }
-
-  async setEquipments(equipments: Equipment[]) {
-    await this.patchState((state) => ({ ...state, equipments: sanitizeEquipments(equipments) }));
-  }
-
-  async resetEquipmentsToDefault() {
-    const clonedDefaultEquipments = DEFAULT_EQUIPMENTS.map((equipment) => ({ ...equipment }));
-    await this.patchState((state) => ({
-      ...state,
-      equipments: clonedDefaultEquipments,
-      transactions: [],
-    }));
   }
 
   async forceReseedDefaultsToFirestore() {
-    const diagnostics = await this.getDiagnostics();
-    if (!diagnostics.isConnected) {
-      throw new Error("Firebase 연결 오류로 기본 시드를 진행할 수 없습니다.");
-    }
-
-    await writeStateToFirestore(defaultState(), "seed");
-  }
-
-  async getTransactions() {
-    return (await this.loadState()).transactions;
-  }
-
-  async setTransactions(transactions: BorrowTransaction[]) {
-    await this.patchState((state) => ({
-      ...state,
-      transactions: normalizeTransactions(transactions),
-    }));
-  }
-
-  async clearAllLoans() {
-    await this.patchState((state) => ({
-      ...state,
-      transactions: [],
-    }));
-  }
-
-  async clearTestLoans() {
-    await this.patchState((state) => ({
-      ...state,
-      transactions: state.transactions.filter((tx) => !isLikelyTestLoan(tx)),
-    }));
-  }
-
-  async auditFirestoreState(): Promise<FirestoreStateAudit> {
     const state = await this.loadState();
-    const borrowed = state.transactions.filter((tx) => tx.status === "borrowed");
-    const returned = state.transactions.filter((tx) => tx.status === "returned");
-    const borrowedMap = new Map<string, { equipmentId: string; name: string; borrowedQuantity: number }>();
-
-    for (const loan of borrowed) {
-      const current = borrowedMap.get(loan.equipmentId);
-      if (current) {
-        current.borrowedQuantity += loan.borrowedQuantity;
-      } else {
-        borrowedMap.set(loan.equipmentId, {
-          equipmentId: loan.equipmentId,
-          name: loan.equipmentName,
-          borrowedQuantity: loan.borrowedQuantity,
-        });
-      }
-    }
-
-    return {
-      schemaVersion: state.schemaVersion,
-      equipmentCount: state.equipments.length,
-      borrowedCount: borrowed.length,
-      returnedCount: returned.length,
-      activeBorrowByEquipment: [...borrowedMap.values()].sort((a, b) => b.borrowedQuantity - a.borrowedQuantity),
-      suspectedTestLoanCount: state.transactions.filter((tx) => isLikelyTestLoan(tx)).length,
-      hasBrokenEmoji: state.equipments.some((equipment) => equipment.emoji.includes("�")),
-    };
+    await writeStateToFirestore({ ...state, schemaVersion: 3, items: DEFAULT_EQUIPMENTS.map((item) => ({ ...item })) }, "seed");
   }
 
-  async getAdminSettings() {
-    return (await this.loadState()).adminSettings;
+  async cleanupLegacyLoanData() {
+    const db = getFirestoreDb();
+    await setDoc(doc(db, LEGACY_LOANS_DOC.col, LEGACY_LOANS_DOC.id), {
+      items: [],
+      archivedAt: serverTimestamp(),
+      note: "legacy loans cleared after schedule-reservation migration",
+    }, { merge: true });
   }
 
+  async getItems() { return (await this.loadState()).items; }
+  async setItems(items: EquipmentItem[]) { await this.patchState((s) => ({ ...s, items: sanitizeItems(items) })); }
+
+  async getReservations() { return (await this.loadState()).reservations; }
+  async setReservations(reservations: LoanReservation[]) {
+    await this.patchState((s) => ({ ...s, reservations: sanitizeReservations(reservations) }));
+  }
+
+  async getAdminSettings() { return (await this.loadState()).adminSettings; }
   async setAdminPassword(password: string) {
-    await this.patchState((state) => ({
-      ...state,
-      adminSettings: {
-        password,
-        isCustomized: true,
-        updatedAt: new Date().toISOString(),
-      },
-    }));
+    await this.patchState((s) => ({ ...s, adminSettings: { password, isCustomized: true, updatedAt: new Date().toISOString() } }));
   }
 }
 
