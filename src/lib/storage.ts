@@ -49,6 +49,18 @@ export async function setTransactions(next: BorrowTransaction[]) {
   await appStorageService.setTransactions(next);
 }
 
+export async function clearAllLoans() {
+  await appStorageService.clearAllLoans();
+}
+
+export async function clearTestLoans() {
+  await appStorageService.clearTestLoans();
+}
+
+export async function auditFirestoreState() {
+  return appStorageService.auditFirestoreState();
+}
+
 export async function getAdminPassword() {
   return (await appStorageService.getAdminSettings()).password;
 }

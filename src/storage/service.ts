@@ -68,7 +68,7 @@ async function readStateFromFirestore(): Promise<AppState | null> {
 
   return {
     schemaVersion: (metaSnap.data()?.schemaVersion as number | undefined) ?? 2,
-    equipments: (itemsSnap.data()?.items as Equipment[] | undefined) ?? fallback.equipments,
+    equipments: sanitizeEquipments((itemsSnap.data()?.items as Equipment[] | undefined) ?? fallback.equipments),
     transactions: normalizeTransactions((loansSnap.data()?.items as BorrowTransaction[] | undefined) ?? []),
     adminSettings: {
       ...fallback.adminSettings,
@@ -81,7 +81,7 @@ async function readStateFromFirestore(): Promise<AppState | null> {
 async function writeStateToFirestore(state: AppState, source: "app" | "seed") {
   const db = getFirestoreDb();
 
-  await Promise.all([
+  await withWriteTimeout(Promise.all([
     setDoc(doc(db, META_DOC.col, META_DOC.id), {
       schemaVersion: state.schemaVersion,
       source,
@@ -99,7 +99,7 @@ async function writeStateToFirestore(state: AppState, source: "app" | "seed") {
       ...state.adminSettings,
       updatedAt: state.adminSettings.updatedAt,
     }, { merge: true }),
-  ]);
+  ]), "Firestore 저장");
 }
 
 type SnapshotBundle = {
@@ -117,7 +117,7 @@ function parseSnapshotBundle(bundle: SnapshotBundle): AppState | null {
   const fallback = defaultState();
   return {
     schemaVersion: (bundle.meta?.schemaVersion as number | undefined) ?? 2,
-    equipments: (bundle.items?.items as Equipment[] | undefined) ?? fallback.equipments,
+    equipments: sanitizeEquipments((bundle.items?.items as Equipment[] | undefined) ?? fallback.equipments),
     transactions: normalizeTransactions((bundle.loans?.items as BorrowTransaction[] | undefined) ?? []),
     adminSettings: {
       ...fallback.adminSettings,
@@ -131,6 +131,56 @@ export type FirestoreDiagnostics = {
   isConnected: boolean;
   isFirestoreEmpty: boolean;
 };
+
+export type FirestoreStateAudit = {
+  schemaVersion: number;
+  equipmentCount: number;
+  borrowedCount: number;
+  returnedCount: number;
+  activeBorrowByEquipment: Array<{ equipmentId: string; name: string; borrowedQuantity: number }>;
+  suspectedTestLoanCount: number;
+  hasBrokenEmoji: boolean;
+};
+
+const DEFAULT_EMOJI_BY_ID: Record<string, string> = Object.fromEntries(
+  DEFAULT_EQUIPMENTS.map((equipment) => [equipment.id, equipment.emoji]),
+);
+
+const WRITE_TIMEOUT_MS = 10_000;
+
+function withWriteTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      const timer = setTimeout(() => {
+        clearTimeout(timer);
+        reject(new Error(`${label} 요청이 제한 시간(10초)을 초과했습니다. 네트워크 연결을 확인해주세요.`));
+      }, WRITE_TIMEOUT_MS);
+    }),
+  ]);
+}
+
+function sanitizeEmoji(rawEmoji: unknown, equipmentId: string): string {
+  const fallback = DEFAULT_EMOJI_BY_ID[equipmentId] ?? "📦";
+  if (typeof rawEmoji !== "string") return fallback;
+  const normalized = rawEmoji.trim();
+  if (!normalized || normalized.includes("�")) return fallback;
+  return normalized;
+}
+
+function sanitizeEquipments(input: Equipment[]): Equipment[] {
+  return input.map((equipment) => ({
+    ...equipment,
+    emoji: sanitizeEmoji(equipment.emoji, equipment.id),
+    totalQuantity: Math.max(1, Number(equipment.totalQuantity) || 1),
+    isQuantityTracked: Boolean(equipment.isQuantityTracked),
+  }));
+}
+
+function isLikelyTestLoan(loan: BorrowTransaction) {
+  const text = `${loan.borrowerName} ${loan.equipmentName}`.toLowerCase();
+  return ["test", "테스트", "sample", "샘플", "dummy", "qa", "debug"].some((keyword) => text.includes(keyword));
+}
 
 export class AppStorageService {
   async loadState(): Promise<AppState> {
@@ -220,7 +270,7 @@ export class AppStorageService {
   }
 
   async setEquipments(equipments: Equipment[]) {
-    await this.patchState((state) => ({ ...state, equipments }));
+    await this.patchState((state) => ({ ...state, equipments: sanitizeEquipments(equipments) }));
   }
 
   async resetEquipmentsToDefault() {
@@ -250,6 +300,50 @@ export class AppStorageService {
       ...state,
       transactions: normalizeTransactions(transactions),
     }));
+  }
+
+  async clearAllLoans() {
+    await this.patchState((state) => ({
+      ...state,
+      transactions: [],
+    }));
+  }
+
+  async clearTestLoans() {
+    await this.patchState((state) => ({
+      ...state,
+      transactions: state.transactions.filter((tx) => !isLikelyTestLoan(tx)),
+    }));
+  }
+
+  async auditFirestoreState(): Promise<FirestoreStateAudit> {
+    const state = await this.loadState();
+    const borrowed = state.transactions.filter((tx) => tx.status === "borrowed");
+    const returned = state.transactions.filter((tx) => tx.status === "returned");
+    const borrowedMap = new Map<string, { equipmentId: string; name: string; borrowedQuantity: number }>();
+
+    for (const loan of borrowed) {
+      const current = borrowedMap.get(loan.equipmentId);
+      if (current) {
+        current.borrowedQuantity += loan.borrowedQuantity;
+      } else {
+        borrowedMap.set(loan.equipmentId, {
+          equipmentId: loan.equipmentId,
+          name: loan.equipmentName,
+          borrowedQuantity: loan.borrowedQuantity,
+        });
+      }
+    }
+
+    return {
+      schemaVersion: state.schemaVersion,
+      equipmentCount: state.equipments.length,
+      borrowedCount: borrowed.length,
+      returnedCount: returned.length,
+      activeBorrowByEquipment: [...borrowedMap.values()].sort((a, b) => b.borrowedQuantity - a.borrowedQuantity),
+      suspectedTestLoanCount: state.transactions.filter((tx) => isLikelyTestLoan(tx)).length,
+      hasBrokenEmoji: state.equipments.some((equipment) => equipment.emoji.includes("�")),
+    };
   }
 
   async getAdminSettings() {
