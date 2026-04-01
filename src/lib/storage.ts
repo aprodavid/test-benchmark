@@ -25,7 +25,7 @@ export async function seedDefaultsIfFirestoreEmpty() {
 }
 
 export async function forceReseedDefaultsToFirestore() {
-  await appStorageService.forceReseedDefaultsToFirestore();
+  return appStorageService.forceReseedDefaultsToFirestore();
 }
 
 export async function cleanupLegacyLoanData() {
@@ -33,11 +33,11 @@ export async function cleanupLegacyLoanData() {
 }
 
 export async function initializeBaseData() {
-  await appStorageService.initializeBaseData();
+  return appStorageService.initializeBaseData();
 }
 
 export async function forceReturnReservation(reservationId: string) {
-  await appStorageService.forceReturnReservation(reservationId);
+  return appStorageService.forceReturnReservation(reservationId);
 }
 
 export async function getItems() {

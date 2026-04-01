@@ -327,9 +327,54 @@ export default function Page() {
     const ok = window.confirm(`[강제 반납 확인]\n${target.itemNameSnapshot} ${target.quantity}개\n책임자: ${target.responsiblePerson}\n지금 즉시 반납 처리할까요?`);
     if (!ok) return;
     await runAdminAction(`force-return-${target.id}`, async () => {
-      await forceReturnReservation(target.id);
-      return `강제 반납 완료: reservations/records에서 ${target.id} 문서를 forced 상태로 갱신했습니다.`;
+      const result = await forceReturnReservation(target.id);
+      return `강제 반납 완료: reservations/records에서 ${result.updatedReservationId} 1건을 forced 상태로 갱신했습니다.`;
     });
+  }
+
+  function AdminOperationsPanel() {
+    return (
+      <>
+        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+          <h3 className="mb-3 text-lg font-bold">운영 관리 / 유지보수 도구</h3>
+          {adminActionMessage && <p className="mb-2 rounded-lg border border-green-200 bg-green-50 p-2 text-sm text-green-700">{adminActionMessage}</p>}
+          {adminActionError && <p className="mb-2 rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">{adminActionError}</p>}
+          <div className="space-y-2">
+            <button disabled={!!adminActionBusy} className="w-full rounded-xl border border-blue-200 bg-white py-3 font-semibold text-blue-700 disabled:opacity-50" onClick={() => void runAdminAction("reseed", async () => {
+              const result = await forceReseedDefaultsToFirestore();
+              return `완료: items/master 기본 악기 ${result.itemCount}종을 재설정했습니다.`;
+            })}>기본 악기 목록 다시 설정</button>
+            <p className="text-sm text-amber-700">items/master의 이름, 아이콘, 수량을 기본값으로 맞춥니다.</p>
+
+            <button disabled={!!adminActionBusy} className="w-full rounded-xl border border-amber-200 bg-white py-3 font-semibold text-amber-700 disabled:opacity-50" onClick={() => void runAdminAction("cleanup", async () => {
+              const result = await cleanupLegacyLoanData();
+              return `완료: reservations ${result.removedReservationCount}건 + loans ${result.removedLegacyLoanCount}건 정리 (${result.reason}).`;
+            })}>구형 테스트 대여기록 정리</button>
+            <p className="text-sm text-amber-700">운영 화면에 영향을 주는 reservations/records와 legacy loans를 함께 정리합니다.</p>
+
+            <button disabled={!!adminActionBusy} className="w-full rounded-xl border border-emerald-200 bg-white py-3 font-semibold text-emerald-700 disabled:opacity-50" onClick={() => void runAdminAction("init-base", async () => {
+              const result = await initializeBaseData();
+              return `완료: 필수 문서 초기 구성 (items ${result.itemCount}건, reservations ${result.reservationCount}건 유지).`;
+            })}>앱 기본 데이터 초기 구성</button>
+            <p className="text-sm text-amber-700">meta/app, items/master, reservations/records, settings/adminSettings를 생성/보완합니다.</p>
+            {isFirestoreEmpty && <p className="text-xs text-gray-600">Firestore가 비어 있어 초기 구성이 필요합니다.</p>}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
+          <h3 className="mb-3 text-lg font-bold text-gray-800">진행중 대여 강제 반납</h3>
+          {activeReservations.length === 0 && <p className="text-sm text-gray-500">현재 진행중인 대여가 없습니다.</p>}
+          <div className="space-y-2">
+            {activeReservations.map((row) => (
+              <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-100 p-3">
+                <p className="text-sm font-medium text-gray-700">{row.itemNameSnapshot} ({row.quantity}개) · {row.place} · {row.responsiblePerson}<span className="ml-2 text-xs text-gray-500">{toDateTimeLabel(row.startAt)} ~ {toDateTimeLabel(getPreferredEndAt(row))}</span></p>
+                <button disabled={!!adminActionBusy} className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:bg-rose-300" onClick={() => void handleForceReturn(row)}>강제 반납</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </>
+    );
   }
 
   return (
@@ -543,7 +588,12 @@ export default function Page() {
         </section>
       )}
 
-      {screen === "admin_home" && <AdminCards onGo={(next) => setScreen(next as Screen)} />}
+      {screen === "admin_home" && (
+        <section className="space-y-4 p-4 md:p-6">
+          <AdminCards onGo={(next) => setScreen(next as Screen)} />
+          <AdminOperationsPanel />
+        </section>
+      )}
 
       {screen === "admin_items" && (
         <section className="space-y-4 p-4 md:p-6">
@@ -587,50 +637,6 @@ export default function Page() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-            <h3 className="mb-3 text-lg font-bold">물품 마스터 관리</h3>
-            <p className="text-sm text-gray-600">세부 물품 수정은 &quot;물품 마스터 관리&quot; 메뉴에서 처리합니다.</p>
-            <button onClick={() => setScreen("admin_items")} className="mt-3 rounded-xl border border-blue-200 px-4 py-2 text-sm font-semibold text-blue-700">물품 마스터 관리로 이동</button>
-          </div>
-
-          <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
-            <h3 className="mb-3 text-lg font-bold">운영 관리 / 유지보수 도구</h3>
-            {adminActionMessage && <p className="mb-2 rounded-lg border border-green-200 bg-green-50 p-2 text-sm text-green-700">{adminActionMessage}</p>}
-            {adminActionError && <p className="mb-2 rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">{adminActionError}</p>}
-            <div className="space-y-2">
-              <button disabled={!!adminActionBusy} className="w-full rounded-xl border border-blue-200 bg-white py-3 font-semibold text-blue-700 disabled:opacity-50" onClick={() => void runAdminAction("reseed", async () => {
-                await forceReseedDefaultsToFirestore();
-                return "완료: items/master 문서를 기본 악기 세트로 재설정했습니다.";
-              })}>기본 악기 목록 다시 설정</button>
-              <p className="text-sm text-amber-700">items/master의 이름, 아이콘, 수량을 기본값으로 맞춥니다.</p>
-
-              <button disabled={!!adminActionBusy} className="w-full rounded-xl border border-amber-200 bg-white py-3 font-semibold text-amber-700 disabled:opacity-50" onClick={() => void runAdminAction("cleanup", async () => {
-                const result = await cleanupLegacyLoanData();
-                return `완료: loans 문서 ${result.removedLegacyLoanCount}건 삭제, reservations 정리 ${result.removedReservationCount}건 (${result.reason}).`;
-              })}>구형 테스트 대여기록 정리</button>
-              <p className="text-sm text-amber-700">loans/* 테스트 문서와 운영에 영향 주는 legacy/test reservations를 문서 단위로 정리합니다.</p>
-
-              <button disabled={!!adminActionBusy} className="w-full rounded-xl border border-emerald-200 bg-white py-3 font-semibold text-emerald-700 disabled:opacity-50" onClick={() => void runAdminAction("init-base", async () => {
-                await initializeBaseData();
-                return "완료: meta/app, items/master, reservations/records, settings/adminSettings를 보완 구성했습니다.";
-              })}>앱 기본 데이터 초기 구성</button>
-              <p className="text-sm text-amber-700">필수 문서가 없는 경우 생성하고, 있는 경우 필요한 필드만 보완합니다.</p>
-              {isFirestoreEmpty && <p className="text-xs text-gray-600">Firestore가 비어 있어 초기 구성이 필요합니다.</p>}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
-            <h3 className="mb-3 text-lg font-bold text-gray-800">진행중 대여 강제 반납</h3>
-            {activeReservations.length === 0 && <p className="text-sm text-gray-500">현재 진행중인 대여가 없습니다.</p>}
-            <div className="space-y-2">
-              {activeReservations.map((row) => (
-                <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-100 p-3">
-                  <p className="text-sm font-medium text-gray-700">{row.itemNameSnapshot} ({row.quantity}개) · {row.place} · {row.responsiblePerson}<span className="ml-2 text-xs text-gray-500">{toDateTimeLabel(row.startAt)} ~ {toDateTimeLabel(getPreferredEndAt(row))}</span></p>
-                  <button disabled={!!adminActionBusy} className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:bg-rose-300" onClick={() => void handleForceReturn(row)}>강제 반납</button>
-                </div>
-              ))}
-            </div>
-          </div>
         </section>
       )}
     </Container>

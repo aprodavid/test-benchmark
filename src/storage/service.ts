@@ -83,6 +83,26 @@ function sanitizeReservations(input: LoanReservation[]): LoanReservation[] {
     }));
 }
 
+function sanitizeForFirestore<T>(value: T): T {
+  if (value === undefined) return null as T;
+  if (value === null) return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeForFirestore(entry)) as T;
+  }
+  if (value instanceof Date || value instanceof Timestamp) {
+    return value;
+  }
+  if (typeof value === "object") {
+    const next: Record<string, unknown> = {};
+    Object.entries(value as Record<string, unknown>).forEach(([key, raw]) => {
+      if (raw === undefined) return;
+      next[key] = sanitizeForFirestore(raw);
+    });
+    return next as T;
+  }
+  return value;
+}
+
 async function readStateFromFirestore(): Promise<AppState | null> {
   const db = getFirestoreDb();
   const [metaSnap, itemsSnap, reservationsSnap, adminSnap] = await Promise.all([
@@ -111,14 +131,19 @@ async function readStateFromFirestore(): Promise<AppState | null> {
 
 async function writeStateToFirestore(state: AppState, source: "app" | "seed") {
   const db = getFirestoreDb();
+  const cleanReservations = sanitizeForFirestore(sanitizeReservations(state.reservations));
+  const cleanItems = sanitizeForFirestore(sanitizeItems(state.items));
+  const cleanAdminSettings = sanitizeForFirestore({
+    ...defaultAdminSettings,
+    ...state.adminSettings,
+    password: state.adminSettings.password || ADMIN_DEFAULT_PASSWORD,
+    updatedAt: state.adminSettings.updatedAt || new Date().toISOString(),
+  });
   await Promise.all([
     setDoc(doc(db, META_DOC.col, META_DOC.id), { schemaVersion: 3, source, updatedAt: serverTimestamp() }, { merge: true }),
-    setDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), { items: state.items, updatedAt: serverTimestamp() }, { merge: true }),
-    setDoc(doc(db, RESERVATIONS_DOC.col, RESERVATIONS_DOC.id), { items: state.reservations, updatedAt: serverTimestamp() }, { merge: true }),
-    setDoc(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), {
-      ...state.adminSettings,
-      updatedAt: state.adminSettings.updatedAt,
-    }, { merge: true }),
+    setDoc(doc(db, ITEMS_DOC.col, ITEMS_DOC.id), { items: cleanItems, updatedAt: serverTimestamp() }, { merge: true }),
+    setDoc(doc(db, RESERVATIONS_DOC.col, RESERVATIONS_DOC.id), { items: cleanReservations, updatedAt: serverTimestamp() }, { merge: true }),
+    setDoc(doc(db, ADMIN_SETTINGS_DOC.col, ADMIN_SETTINGS_DOC.id), cleanAdminSettings, { merge: true }),
   ]);
 }
 
@@ -204,6 +229,7 @@ export class AppStorageService {
   async forceReseedDefaultsToFirestore() {
     const state = await this.loadState();
     await writeStateToFirestore({ ...state, schemaVersion: 3, items: DEFAULT_EQUIPMENTS.map((item) => ({ ...item })) }, "seed");
+    return { itemCount: DEFAULT_EQUIPMENTS.length };
   }
 
   async cleanupLegacyLoanData(): Promise<LegacyCleanupResult> {
@@ -265,6 +291,10 @@ export class AppStorageService {
       },
     };
     await writeStateToFirestore(normalized, "seed");
+    return {
+      itemCount: normalized.items.length,
+      reservationCount: normalized.reservations.length,
+    };
   }
 
   async forceReturnReservation(reservationId: string) {
@@ -284,6 +314,7 @@ export class AppStorageService {
     });
     if (!found) throw new Error("강제 반납 대상 예약을 찾지 못했습니다.");
     await this.setReservations(next);
+    return { updatedReservationId: reservationId };
   }
 
   async getItems() { return (await this.loadState()).items; }

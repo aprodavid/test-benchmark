@@ -48,7 +48,7 @@ export function AdminCards({ onGo }: { onGo: (screen: string) => void }) {
   ];
 
   return (
-    <section className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 md:p-6">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {cards.map((card) => (
         <button key={card.id} onClick={() => onGo(card.id)} className="flex items-center gap-4 rounded-2xl border border-gray-100 bg-white p-6 text-left shadow-sm hover:border-gray-300">
           <div className={`rounded-full p-4 ${card.box}`}>{card.icon}</div>
@@ -58,6 +58,6 @@ export function AdminCards({ onGo }: { onGo: (screen: string) => void }) {
           </div>
         </button>
       ))}
-    </section>
+    </div>
   );
 }
