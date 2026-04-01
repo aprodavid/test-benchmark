@@ -6,6 +6,9 @@ import { AdminCards, Container, EmptyState, FixedCTA, Header, HomeCards } from "
 import { DEFAULT_EQUIPMENTS } from "@/data/defaultEquipments";
 import {
   DEFAULT_ADMIN_PASSWORD,
+  auditFirestoreState,
+  clearAllLoans,
+  clearTestLoans,
   forceReseedDefaultsToFirestore,
   getStorageDiagnostics,
   loadAppState,
@@ -30,6 +33,7 @@ const GRADE_CLASS_OPTIONS: Record<string, number[]> = {
 };
 
 export default function Page() {
+  type AuditState = Awaited<ReturnType<typeof auditFirestoreState>>;
   const [screen, setScreen] = useState<Screen>("home");
   const [equipments, setEquipmentsState] = useState<Equipment[]>(DEFAULT_EQUIPMENTS);
   const [transactions, setTransactionsState] = useState<BorrowTransaction[]>([]);
@@ -57,6 +61,8 @@ export default function Page() {
   const [isBusy, setIsBusy] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [storageErrorMessage, setStorageErrorMessage] = useState("");
+  const [adminAudit, setAdminAudit] = useState<AuditState | null>(null);
+  const [adminAuditMessage, setAdminAuditMessage] = useState("");
 
   const [newName, setNewName] = useState("");
   const [newEmoji, setNewEmoji] = useState("📦");
@@ -166,7 +172,19 @@ export default function Page() {
     alert(message);
   };
 
+  const runAdminAction = async (action: () => Promise<void>, fallbackMessage: string) => {
+    try {
+      setIsAdminActionBusy(true);
+      await action();
+    } catch (error) {
+      handleStorageWriteError(error, fallbackMessage);
+    } finally {
+      setIsAdminActionBusy(false);
+    }
+  };
+
   const completeBorrow = async () => {
+    if (isBusy) return;
     if (!borrowerName) {
       alert("대여자 정보를 입력해주세요.");
       return;
@@ -207,6 +225,11 @@ export default function Page() {
   };
 
   const completeReturn = async () => {
+    if (isBusy) return;
+    if (selectedReturnIds.length === 0) {
+      setReturnPinError("반납할 항목을 먼저 선택해주세요.");
+      return;
+    }
     const selectedRows = borrowedList.filter((tx) => selectedReturnIds.includes(tx.id));
     const hasPinProtectedRow = selectedRows.some((tx) => !!tx.borrowPin);
     if (hasPinProtectedRow && !/^\d{4}$/.test(returnPinInput)) {
@@ -690,18 +713,10 @@ export default function Page() {
                 disabled={isAdminActionBusy}
                 onClick={() => {
                   if (!confirm("Firestore가 비어 있을 때만 기본 교구 시드를 넣습니다. 지금 진행할까요?")) return;
-                  void (async () => {
-                    try {
-                      setIsAdminActionBusy(true);
-                      await seedDefaultsIfFirestoreEmpty();
-                      alert("Firestore 초기 시드가 완료되었습니다.");
-                    } catch (error) {
-                      const message = error instanceof Error ? error.message : "초기 시드에 실패했습니다.";
-                      alert(message);
-                    } finally {
-                      setIsAdminActionBusy(false);
-                    }
-                  })();
+                  void runAdminAction(async () => {
+                    await seedDefaultsIfFirestoreEmpty();
+                    alert("Firestore 초기 시드가 완료되었습니다.");
+                  }, "초기 시드에 실패했습니다.");
                 }}
                 className="mt-4 w-full rounded-xl border border-emerald-200 bg-emerald-50 py-3 text-base font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-60"
               >
@@ -722,23 +737,78 @@ export default function Page() {
                   return;
                 }
 
-                void (async () => {
-                  try {
-                    setIsAdminActionBusy(true);
-                    await forceReseedDefaultsToFirestore();
-                    alert("Firestore 기본 데이터 재시드가 완료되었습니다.");
-                  } catch (error) {
-                    const message = error instanceof Error ? error.message : "기본 데이터 재시드에 실패했습니다.";
-                    alert(message);
-                  } finally {
-                    setIsAdminActionBusy(false);
-                  }
-                })();
+                void runAdminAction(async () => {
+                  await forceReseedDefaultsToFirestore();
+                  alert("Firestore 기본 데이터 재시드가 완료되었습니다.");
+                }, "기본 데이터 재시드에 실패했습니다.");
               }}
               className="mt-4 w-full rounded-xl border border-red-200 bg-red-50 py-3 text-base font-bold text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60"
             >
               기본 교구를 Firestore에 다시 시드하기 (주의)
             </button>
+            <button
+              disabled={isAdminActionBusy}
+              onClick={() => {
+                if (!confirm("현재 대여/반납 기록(loans)을 모두 삭제하여 전체를 미대여 상태로 만들까요?")) return;
+                void runAdminAction(async () => {
+                  await clearAllLoans();
+                  alert("모든 대여/반납 기록이 정리되었습니다.");
+                }, "대여/반납 기록 정리에 실패했습니다.");
+              }}
+              className="mt-4 w-full rounded-xl border border-orange-200 bg-orange-50 py-3 text-base font-bold text-orange-700 transition-colors hover:bg-orange-100 disabled:opacity-60"
+            >
+              대여/반납 기록 전체 정리 (미대여 초기화)
+            </button>
+            <button
+              disabled={isAdminActionBusy}
+              onClick={() => {
+                void runAdminAction(async () => {
+                  await clearTestLoans();
+                  alert("테스트로 보이는 대여 기록을 정리했습니다.");
+                }, "테스트 대여 기록 정리에 실패했습니다.");
+              }}
+              className="mt-4 w-full rounded-xl border border-amber-200 bg-amber-50 py-3 text-base font-bold text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-60"
+            >
+              테스트 대여 데이터 정리
+            </button>
+            <button
+              disabled={isAdminActionBusy}
+              onClick={() => {
+                void runAdminAction(async () => {
+                  const report = await auditFirestoreState();
+                  setAdminAudit(report);
+                  setAdminAuditMessage(`점검 완료: 대여중 ${report.borrowedCount}건 / 반납완료 ${report.returnedCount}건`);
+                }, "Firestore 상태 점검에 실패했습니다.");
+              }}
+              className="mt-4 w-full rounded-xl border border-slate-200 bg-slate-50 py-3 text-base font-bold text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-60"
+            >
+              Firestore 현재 상태 점검
+            </button>
+            {adminAuditMessage && (
+              <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-medium text-slate-700">{adminAuditMessage}</p>
+            )}
+            {adminAudit && (
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                <p>schemaVersion: {adminAudit.schemaVersion}</p>
+                <p>교구 수: {adminAudit.equipmentCount}개</p>
+                <p>대여중: {adminAudit.borrowedCount}건</p>
+                <p>반납완료: {adminAudit.returnedCount}건</p>
+                <p>테스트 의심 데이터: {adminAudit.suspectedTestLoanCount}건</p>
+                <p>깨진 이모지 감지: {adminAudit.hasBrokenEmoji ? "예" : "아니오"}</p>
+                <div className="mt-2">
+                  <p className="font-semibold">현재 대여 중 집계</p>
+                  {adminAudit.activeBorrowByEquipment.length === 0 ? (
+                    <p>없음 (전체 미대여 상태)</p>
+                  ) : (
+                    <ul className="list-disc pl-5">
+                      {adminAudit.activeBorrowByEquipment.map((row) => (
+                        <li key={row.equipmentId}>{row.name}: {row.borrowedQuantity}개</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </section>
       )}
