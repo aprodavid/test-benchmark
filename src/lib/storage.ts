@@ -1,6 +1,6 @@
 import { ADMIN_DEFAULT_PASSWORD } from "@/config/security";
 import { appStorageService } from "@/storage/service";
-import { BorrowTransaction, Equipment } from "@/types/app";
+import { EquipmentItem, LoanReservation } from "@/types/app";
 
 export const DEFAULT_ADMIN_PASSWORD = ADMIN_DEFAULT_PASSWORD;
 
@@ -20,7 +20,6 @@ export async function getStorageDiagnostics() {
   return appStorageService.getDiagnostics();
 }
 
-
 export async function seedDefaultsIfFirestoreEmpty() {
   await appStorageService.seedDefaultsIfFirestoreEmpty();
 }
@@ -29,44 +28,28 @@ export async function forceReseedDefaultsToFirestore() {
   await appStorageService.forceReseedDefaultsToFirestore();
 }
 
-export async function getEquipments(_initial?: Equipment[]) {
-  return appStorageService.getEquipments();
+export async function cleanupLegacyLoanData() {
+  await appStorageService.cleanupLegacyLoanData();
 }
 
-export async function setEquipments(next: Equipment[]) {
-  await appStorageService.setEquipments(next);
+export async function getItems() {
+  return appStorageService.getItems();
 }
 
-export async function resetEquipmentsToDefault() {
-  await appStorageService.resetEquipmentsToDefault();
+export async function setItems(next: EquipmentItem[]) {
+  await appStorageService.setItems(next);
 }
 
-export async function getTransactions() {
-  return appStorageService.getTransactions();
+export async function getReservations() {
+  return appStorageService.getReservations();
 }
 
-export async function setTransactions(next: BorrowTransaction[]) {
-  await appStorageService.setTransactions(next);
-}
-
-export async function clearAllLoans() {
-  await appStorageService.clearAllLoans();
-}
-
-export async function clearTestLoans() {
-  await appStorageService.clearTestLoans();
-}
-
-export async function auditFirestoreState() {
-  return appStorageService.auditFirestoreState();
+export async function setReservations(next: LoanReservation[]) {
+  await appStorageService.setReservations(next);
 }
 
 export async function getAdminPassword() {
   return (await appStorageService.getAdminSettings()).password;
-}
-
-export async function isAdminPasswordCustomized() {
-  return (await appStorageService.getAdminSettings()).isCustomized;
 }
 
 export async function setAdminPassword(next: string) {

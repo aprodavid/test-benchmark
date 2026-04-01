@@ -1,4 +1,4 @@
-import { BorrowTransaction, Equipment } from "@/types/app";
+import { EquipmentItem, LoanReservation } from "@/types/app";
 
 export type AdminSettings = {
   password: string;
@@ -8,7 +8,7 @@ export type AdminSettings = {
 
 export type AppState = {
   schemaVersion: number;
-  equipments: Equipment[];
-  transactions: BorrowTransaction[];
+  items: EquipmentItem[];
+  reservations: LoanReservation[];
   adminSettings: AdminSettings;
 };
