@@ -1,4 +1,4 @@
-import { ArrowLeft, Lock, NotebookPen, Package, Settings } from "lucide-react";
+import { ArrowLeft, CalendarClock, Lock, NotebookPen, Package, Settings } from "lucide-react";
 import { ReactNode } from "react";
 
 export function Container({ children }: { children: ReactNode }) {
@@ -22,11 +22,12 @@ export function HomeCards({ onGo }: { onGo: (screen: string) => void }) {
   const cards = [
     { id: "borrow", title: "대여", desc: "악기 대여 스케줄 등록", icon: <Package />, color: "text-green-600 bg-green-100" },
     { id: "ledger", title: "물품대장", desc: "예약/대여 이력 전체 보기", icon: <NotebookPen />, color: "text-blue-600 bg-blue-100" },
+    { id: "schedule", title: "예약스케줄", desc: "날짜순 운영 일정표", icon: <CalendarClock />, color: "text-indigo-600 bg-indigo-100" },
     { id: "admin_home", title: "관리자", desc: "마스터/점검/재시드", icon: <Settings />, color: "text-gray-600 bg-gray-100" },
   ];
 
   return (
-    <section className="grid grid-cols-1 gap-4 p-4 md:grid-cols-3 md:p-6">
+    <section className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 md:p-6">
       {cards.map((card) => (
         <button key={card.id} onClick={() => onGo(card.id)} className="flex items-center gap-4 rounded-2xl border border-gray-100 bg-white p-6 text-left shadow-sm hover:border-gray-300">
           <div className={`rounded-full p-3 ${card.color}`}>{card.icon}</div>

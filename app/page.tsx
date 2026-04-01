@@ -18,8 +18,23 @@ import {
 } from "@/lib/storage";
 import { EquipmentItem, LoanReservation, ReservationWithStatus, Screen } from "@/types/app";
 
-const ICON_OPTIONS = ["📦", "🎹", "🪇", "🪵", "🥁", "🪘", "🎼", "🔔", "🛎️", "🎶"];
+const ICON_OPTIONS = ["📦", "🎹", "🥁", "🎼", "🔔", "🛎️", "🎶"];
 const MUSIC_ROOM = "음악교구실";
+const ICON_BY_ITEM_ID: Record<string, string> = {
+  "eq-electronic-piano": "🎹",
+  "eq-rhythm-set": "🥁",
+  "eq-wood-block": "🥁",
+  "eq-big-drum": "🥁",
+  "eq-small-drum": "🥁",
+  "eq-xylophone": "🎼",
+  "eq-janggu": "🥁",
+  "eq-samul-drum": "🥁",
+  "eq-kkwaenggwari": "🔔",
+  "eq-sogo": "🥁",
+  "eq-music-stand": "🎼",
+  "eq-steel-tongue-drum": "🛎️",
+  "eq-kalimba": "🎶",
+};
 
 function toDateTimeLabel(iso: string) {
   return new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
@@ -35,6 +50,34 @@ function combineDateTime(dateText: string, timeText: string) {
 
 function isOverlapped(aStart: string, aEnd: string, bStart: string, bEnd: string) {
   return new Date(aStart).getTime() < new Date(bEnd).getTime() && new Date(aEnd).getTime() > new Date(bStart).getTime();
+}
+
+function getPreferredEndAt(row: LoanReservation) {
+  return row.actualReturnedAt ?? row.endAt;
+}
+
+function getReservationStatus(row: LoanReservation, currentTime: number): ReservationWithStatus["status"] {
+  if (row.returnMode === "forced" && row.actualReturnedAt) return "forced_returned";
+  if (new Date(row.startAt).getTime() > currentTime) return "scheduled";
+  return new Date(getPreferredEndAt(row)).getTime() > currentTime ? "active" : "completed";
+}
+
+function getStableItemIcon(item: EquipmentItem): string {
+  const normalized = item.emoji?.trim();
+  if (normalized && !normalized.includes("�")) return normalized;
+  return ICON_BY_ITEM_ID[item.id] ?? "📦";
+}
+
+function IconBadge({ item }: { item: EquipmentItem }) {
+  const icon = getStableItemIcon(item);
+  const fallbackText = item.name.slice(0, 1);
+  return (
+    <span className="inline-flex min-w-8 items-center justify-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-sm">
+      <span aria-hidden>{icon}</span>
+      <span className="sr-only">{item.name}</span>
+      <span className="text-[10px] font-bold text-gray-500">{fallbackText}</span>
+    </span>
+  );
 }
 
 export default function Page() {
@@ -119,7 +162,7 @@ export default function Page() {
     return reservations
       .map((row) => ({
         ...row,
-        status: (new Date(row.endAt).getTime() > currentTime ? "active" : "completed") as "active" | "completed",
+        status: getReservationStatus(row, currentTime),
       }))
       .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
   }, [reservations, currentTime]);
@@ -127,7 +170,7 @@ export default function Page() {
   const inventoryRows = useMemo(() => {
     return items.map((item) => {
       const activeRows = reservations.filter(
-        (row) => row.itemId === item.id && new Date(row.startAt).getTime() <= currentTime && new Date(row.endAt).getTime() > currentTime,
+        (row) => row.itemId === item.id && getReservationStatus(row, currentTime) === "active",
       );
       const activeQuantity = activeRows.reduce((sum, row) => sum + row.quantity, 0);
       const availableQuantity = Math.max(0, item.totalQuantity - activeQuantity);
@@ -143,7 +186,7 @@ export default function Page() {
   const endAt = combineDateTime(borrowForm.endDate, borrowForm.endTime);
 
   const overlapRows = reservations
-    .filter((row) => row.itemId === selectedItemId && isOverlapped(startAt, endAt, row.startAt, row.endAt))
+    .filter((row) => row.itemId === selectedItemId && isOverlapped(startAt, endAt, row.startAt, getPreferredEndAt(row)))
     .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
 
   const maxOverlappedReserved = overlapRows.reduce((max, base) => {
@@ -154,6 +197,10 @@ export default function Page() {
   }, 0);
 
   const availableForRequest = Math.max(0, totalForSelected - maxOverlappedReserved);
+  const activeReservations = useMemo(
+    () => reservationsWithStatus.filter((row) => row.status === "active"),
+    [reservationsWithStatus],
+  );
 
   async function handleCreateReservation() {
     if (!borrowForm.place.trim() || !borrowForm.responsiblePerson.trim()) {
@@ -191,10 +238,38 @@ export default function Page() {
     setScreen("ledger");
   }
 
+  async function handleForceReturn(target: LoanReservation) {
+    const ok = window.confirm(`[강제 반납 확인]\n${target.itemNameSnapshot} ${target.quantity}개\n책임자: ${target.responsiblePerson}\n지금 즉시 반납 처리할까요?`);
+    if (!ok) return;
+    const nowIso = new Date().toISOString();
+    const next = reservations.map((row) => row.id !== target.id
+      ? row
+      : {
+          ...row,
+          actualReturnedAt: nowIso,
+          returnMode: "forced" as const,
+          returnedByAdmin: "admin",
+          returnNote: row.returnNote ?? "관리자 강제 반납",
+          place: MUSIC_ROOM,
+        });
+    await setReservations(next);
+    alert("강제 반납 처리되었습니다.");
+  }
+
   return (
     <Container>
       <Header
-        title={screen === "home" ? "악기 대여 스케줄 매니저" : screen === "borrow" ? "대여 등록" : screen === "ledger" ? "악기관리대장" : "관리자"}
+        title={
+          screen === "home"
+            ? "악기 대여 스케줄 매니저"
+            : screen === "borrow"
+              ? "대여 등록"
+              : screen === "ledger"
+                ? "악기관리대장"
+                : screen === "schedule"
+                  ? "예약스케줄"
+                  : "관리자"
+        }
         onBack={screen !== "home" ? () => {
           if (screen === "admin_home" || screen === "admin_auth") {
             setScreen("home");
@@ -230,7 +305,7 @@ export default function Page() {
                 <tbody>
                   {inventoryRows.map(({ item, availableQuantity, activeQuantity, latestPlace }) => (
                     <tr key={item.id} className="border-t border-gray-100 align-top">
-                      <td className="px-3 py-3 font-semibold">{item.emoji} {item.name}</td>
+                      <td className="px-3 py-3 font-semibold"><IconBadge item={item} /> <span className="ml-2">{item.name}</span></td>
                       <td className="px-3 py-3">{item.totalQuantity}</td>
                       <td className="px-3 py-3">
                         {activeQuantity === 0
@@ -253,7 +328,7 @@ export default function Page() {
           <div className="grid gap-3 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm md:grid-cols-2">
             <label className="text-sm font-medium text-gray-600">물품명
               <select className="mt-1 w-full rounded-lg border border-gray-200 p-3" value={selectedItemId} onChange={(e) => setBorrowForm((p) => ({ ...p, itemId: e.target.value, quantity: 1 }))}>
-                {items.map((item) => <option key={item.id} value={item.id}>{item.emoji} {item.name}</option>)}
+                {items.map((item) => <option key={item.id} value={item.id}>{getStableItemIcon(item)} {item.name}</option>)}
               </select>
             </label>
             <label className="text-sm font-medium text-gray-600">수량
@@ -287,7 +362,7 @@ export default function Page() {
             {overlapRows.length > 0 && (
               <ul className="mt-2 list-disc space-y-1 pl-5">
                 {overlapRows.slice(0, 4).map((row) => (
-                  <li key={row.id}>{row.place} · {row.responsiblePerson} · {toDateTimeLabel(row.startAt)}~{toDateTimeLabel(row.endAt)} ({row.quantity}개)</li>
+                  <li key={row.id}>{row.place} · {row.responsiblePerson} · {toDateTimeLabel(row.startAt)}~{toDateTimeLabel(getPreferredEndAt(row))} ({row.quantity}개)</li>
                 ))}
               </ul>
             )}
@@ -310,6 +385,7 @@ export default function Page() {
                   <th className="px-3 py-3">대여장소</th>
                   <th className="px-3 py-3">책임자</th>
                   <th className="px-3 py-3">비고</th>
+                  <th className="px-3 py-3">상태</th>
                 </tr>
               </thead>
               <tbody>
@@ -318,12 +394,75 @@ export default function Page() {
                     <td className="px-3 py-3">{idx + 1}</td>
                     <td className="px-3 py-3 font-semibold">{row.itemNameSnapshot} ({row.quantity}개)</td>
                     <td className="px-3 py-3">{toDateTimeLabel(row.startAt)}</td>
-                    <td className="px-3 py-3">{toDateTimeLabel(row.endAt)}<div className={`mt-1 text-xs font-semibold ${row.status === "active" ? "text-green-600" : "text-gray-500"}`}>{row.status === "active" ? "진행중" : "종료"}</div></td>
+                    <td className="px-3 py-3">{toDateTimeLabel(getPreferredEndAt(row))}</td>
                     <td className="px-3 py-3">{row.place}</td>
                     <td className="px-3 py-3">{row.responsiblePerson}</td>
-                    <td className="px-3 py-3">{row.note || "-"}</td>
+                    <td className="px-3 py-3">{row.returnMode === "forced" ? `${row.note || "-"} / ${row.returnNote || "관리자 강제 반납"}` : (row.note || "-")}</td>
+                    <td className="px-3 py-3">
+                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                        row.status === "active"
+                          ? "bg-green-100 text-green-700"
+                          : row.status === "scheduled"
+                            ? "bg-blue-100 text-blue-700"
+                            : row.status === "forced_returned"
+                              ? "bg-rose-100 text-rose-700"
+                              : "bg-gray-100 text-gray-600"
+                      }`}>
+                        {row.status === "active" ? "진행중" : row.status === "scheduled" ? "예정" : row.status === "forced_returned" ? "강제반납" : "종료"}
+                      </span>
+                    </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {screen === "schedule" && (
+        <section className="p-4 md:p-6">
+          <div className="overflow-x-auto rounded-2xl border border-gray-100 bg-white shadow-sm">
+            <table className="min-w-[960px] text-sm">
+              <thead className="bg-gray-50 text-left text-gray-600">
+                <tr>
+                  <th className="px-3 py-3">no</th>
+                  <th className="px-3 py-3">물품명</th>
+                  <th className="px-3 py-3">대여일자</th>
+                  <th className="px-3 py-3">반납일자</th>
+                  <th className="px-3 py-3">대여장소</th>
+                  <th className="px-3 py-3">책임자</th>
+                  <th className="px-3 py-3">비고</th>
+                  <th className="px-3 py-3">상태</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reservationsWithStatus
+                  .slice()
+                  .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime() || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                  .map((row, idx) => (
+                    <tr key={row.id} className={`border-t border-gray-100 align-top ${row.status === "active" ? "bg-green-50/60" : row.status === "scheduled" ? "bg-blue-50/60" : ""}`}>
+                      <td className="px-3 py-3">{idx + 1}</td>
+                      <td className="px-3 py-3 font-semibold">{row.itemNameSnapshot} ({row.quantity}개)</td>
+                      <td className="px-3 py-3">{toDateTimeLabel(row.startAt)}</td>
+                      <td className="px-3 py-3">{toDateTimeLabel(getPreferredEndAt(row))}</td>
+                      <td className="px-3 py-3">{row.place}</td>
+                      <td className="px-3 py-3">{row.responsiblePerson}</td>
+                      <td className="px-3 py-3">{row.returnMode === "forced" ? `${row.note || "-"} / ${row.returnNote || "관리자 강제 반납"}` : (row.note || "-")}</td>
+                      <td className="px-3 py-3">
+                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                          row.status === "active"
+                            ? "bg-green-100 text-green-700"
+                            : row.status === "scheduled"
+                              ? "bg-indigo-100 text-indigo-700"
+                              : row.status === "forced_returned"
+                                ? "bg-rose-100 text-rose-700"
+                                : "bg-gray-100 text-gray-600"
+                        }`}>
+                          {row.status === "active" ? "진행중" : row.status === "scheduled" ? "예정" : row.status === "forced_returned" ? "강제반납" : "종료"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
@@ -372,7 +511,7 @@ export default function Page() {
           </div>
           {items.map((item) => (
             <div key={item.id} className="flex items-center justify-between rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-              <p className="font-semibold">{item.emoji} {item.name} ({item.totalQuantity}개)</p>
+              <p className="font-semibold"><IconBadge item={item} /> <span className="ml-2">{item.name} ({item.totalQuantity}개)</span></p>
               <button className="rounded-lg p-2 text-red-500 hover:bg-red-50" onClick={() => void setItems(items.filter((row) => row.id !== item.id))}><Trash2 size={18} /></button>
             </div>
           ))}
@@ -399,9 +538,36 @@ export default function Page() {
             </div>
           </div>
 
-          <button className="w-full rounded-xl border border-blue-200 bg-blue-50 py-3 font-semibold text-blue-700" onClick={() => void forceReseedDefaultsToFirestore()}>기본 악기 재시드</button>
-          <button className="w-full rounded-xl border border-amber-200 bg-amber-50 py-3 font-semibold text-amber-700" onClick={() => void cleanupLegacyLoanData()}>구형 테스트 대여 데이터 정리</button>
-          <button className="w-full rounded-xl border border-emerald-200 bg-emerald-50 py-3 font-semibold text-emerald-700" onClick={() => void seedDefaultsIfFirestoreEmpty()} disabled={!isFirestoreEmpty}>Firestore 비어있을 때 기본 데이터 시드</button>
+          <div className="space-y-2 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+            <button className="w-full rounded-xl border border-blue-200 bg-white py-3 font-semibold text-blue-700" onClick={() => void forceReseedDefaultsToFirestore()}>기본 악기 목록 다시 설정</button>
+            <p className="text-sm text-blue-700">기본 악기 종류, 수량, 아이콘을 다시 맞춥니다.</p>
+          </div>
+          <div className="space-y-2 rounded-2xl border border-amber-100 bg-amber-50 p-4">
+            <button className="w-full rounded-xl border border-amber-200 bg-white py-3 font-semibold text-amber-700" onClick={() => void cleanupLegacyLoanData()}>구형 테스트 대여기록 정리</button>
+            <p className="text-sm text-amber-700">예전 테스트용 대여 데이터를 정리합니다.</p>
+          </div>
+          <div className="space-y-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+            <button className="w-full rounded-xl border border-emerald-200 bg-white py-3 font-semibold text-emerald-700" onClick={() => void seedDefaultsIfFirestoreEmpty()} disabled={!isFirestoreEmpty}>앱 기본 데이터 초기 구성</button>
+            <p className="text-sm text-emerald-700">앱 실행에 필요한 기본 문서를 다시 만듭니다.</p>
+          </div>
+
+          <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
+            <h3 className="mb-3 text-lg font-bold text-gray-800">진행중 대여 강제 반납</h3>
+            {activeReservations.length === 0 && <p className="text-sm text-gray-500">현재 진행중인 대여가 없습니다.</p>}
+            <div className="space-y-2">
+              {activeReservations.map((row) => (
+                <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-100 p-3">
+                  <p className="text-sm font-medium text-gray-700">
+                    {row.itemNameSnapshot} ({row.quantity}개) · {row.place} · {row.responsiblePerson}
+                    <span className="ml-2 text-xs text-gray-500">{toDateTimeLabel(row.startAt)} ~ {toDateTimeLabel(getPreferredEndAt(row))}</span>
+                  </p>
+                  <button className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700" onClick={() => void handleForceReturn(row)}>
+                    강제 반납
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         </section>
       )}
     </Container>
