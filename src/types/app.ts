@@ -2,6 +2,7 @@ export type Screen =
   | "home"
   | "borrow"
   | "ledger"
+  | "schedule"
   | "admin_auth"
   | "admin_home"
   | "admin_items"
@@ -25,9 +26,13 @@ export type LoanReservation = {
   responsiblePerson: string;
   note?: string;
   createdAt: string;
+  actualReturnedAt?: string;
+  returnMode?: "auto" | "forced";
+  returnedByAdmin?: string;
+  returnNote?: string;
 };
 
-export type ReservationStatus = "active" | "completed";
+export type ReservationStatus = "scheduled" | "active" | "completed" | "forced_returned";
 
 export type ReservationWithStatus = LoanReservation & {
   status: ReservationStatus;

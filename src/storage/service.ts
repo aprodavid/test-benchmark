@@ -73,6 +73,10 @@ function sanitizeReservations(input: LoanReservation[]): LoanReservation[] {
       createdAt: toIsoString(row.createdAt),
       startAt: toIsoString(row.startAt),
       endAt: toIsoString(row.endAt),
+      actualReturnedAt: row.actualReturnedAt ? toIsoString(row.actualReturnedAt) : undefined,
+      returnMode: row.returnMode === "forced" ? "forced" : row.returnMode === "auto" ? "auto" : undefined,
+      returnedByAdmin: row.returnedByAdmin?.trim() ? row.returnedByAdmin.trim() : undefined,
+      returnNote: row.returnNote?.trim() ? row.returnNote.trim() : undefined,
     }));
 }
 
