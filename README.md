@@ -54,9 +54,11 @@ NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=...
 - `items/master`
   - `items: Equipment[]`
   - `updatedAt`
-- `loans/records`
+- `reservations/records`
   - `items: BorrowTransaction[]`
   - `updatedAt`
+- `loans/*` (레거시 정리 대상)
+  - 과거 테스트 데이터. 관리자 메뉴에서 문서 단위로 정리 권장.
 - `settings/adminSettings`
   - `password`
   - `isCustomized`
@@ -78,6 +80,16 @@ NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=...
 
 ## Firestore 보안 규칙 초안
 `firestore.rules` 파일에 알파 테스트용/운영용 초안을 함께 제공합니다.
+
+### 알파 테스트 환경 체크리스트 (중요)
+- 이 앱은 Firebase Authentication 없이 Firestore 쓰기/삭제를 수행합니다.
+- 따라서 Rules가 엄격하면 `permission-denied`로 대여 등록/관리자 액션이 실패합니다.
+- 실패 시 UI에 에러가 표시되며, 콘솔에서도 상세 오류를 확인하세요.
+- 배포/테스트 전 `firestore.rules`에서 아래 경로 권한을 반드시 확인하세요.
+  - `meta/app`
+  - `items/master`
+  - `reservations/records`
+  - `settings/adminSettings`
 
 ## 주요 구조
 - `app/page.tsx`: 전체 화면 상태/흐름 제어

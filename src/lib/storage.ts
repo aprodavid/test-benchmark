@@ -29,7 +29,15 @@ export async function forceReseedDefaultsToFirestore() {
 }
 
 export async function cleanupLegacyLoanData() {
-  await appStorageService.cleanupLegacyLoanData();
+  return appStorageService.cleanupLegacyLoanData();
+}
+
+export async function initializeBaseData() {
+  await appStorageService.initializeBaseData();
+}
+
+export async function forceReturnReservation(reservationId: string) {
+  await appStorageService.forceReturnReservation(reservationId);
 }
 
 export async function getItems() {

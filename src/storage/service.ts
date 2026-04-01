@@ -6,8 +6,11 @@ import { EquipmentItem, LoanReservation } from "@/types/app";
 import {
   DocumentData,
   Timestamp,
+  collection,
+  deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   serverTimestamp,
   setDoc,
@@ -147,6 +150,12 @@ export type InventorySummary = {
   latestPlace: string;
 };
 
+export type LegacyCleanupResult = {
+  removedReservationCount: number;
+  removedLegacyLoanCount: number;
+  reason: string;
+};
+
 export class AppStorageService {
   async loadState(): Promise<AppState> {
     return (await readStateFromFirestore()) ?? defaultState();
@@ -197,13 +206,84 @@ export class AppStorageService {
     await writeStateToFirestore({ ...state, schemaVersion: 3, items: DEFAULT_EQUIPMENTS.map((item) => ({ ...item })) }, "seed");
   }
 
-  async cleanupLegacyLoanData() {
+  async cleanupLegacyLoanData(): Promise<LegacyCleanupResult> {
     const db = getFirestoreDb();
-    await setDoc(doc(db, LEGACY_LOANS_DOC.col, LEGACY_LOANS_DOC.id), {
-      items: [],
-      archivedAt: serverTimestamp(),
-      note: "legacy loans cleared after schedule-reservation migration",
-    }, { merge: true });
+    const state = await this.loadState();
+    const itemIds = new Set(state.items.map((item) => item.id));
+
+    const legacyRegex = /(test|테스트|legacy|샘플|sample)/i;
+    const nextReservations = state.reservations.filter((row) => {
+      const hasUnknownItem = !itemIds.has(row.itemId);
+      const flaggedAsLegacy = legacyRegex.test(`${row.place} ${row.responsiblePerson} ${row.note ?? ""}`);
+      const isVeryOld = new Date(row.createdAt).getUTCFullYear() < 2025;
+      return !(hasUnknownItem || flaggedAsLegacy || isVeryOld);
+    });
+
+    const removedReservationCount = state.reservations.length - nextReservations.length;
+    if (removedReservationCount > 0) {
+      await this.setReservations(nextReservations);
+    }
+
+    const legacyLoanColSnap = await getDocs(collection(db, LEGACY_LOANS_DOC.col));
+    const legacyLoanDeletes = legacyLoanColSnap.docs.map(async (snap) => {
+      const data = snap.data();
+      if (snap.id === LEGACY_LOANS_DOC.id) {
+        await setDoc(doc(db, LEGACY_LOANS_DOC.col, LEGACY_LOANS_DOC.id), {
+          items: [],
+          archivedAt: serverTimestamp(),
+          note: "legacy loans cleared after schedule-reservation migration",
+        }, { merge: true });
+        return 0;
+      }
+      if (!legacyRegex.test(snap.id) && !legacyRegex.test(JSON.stringify(data))) {
+        return 0;
+      }
+      await deleteDoc(doc(db, LEGACY_LOANS_DOC.col, snap.id));
+      return 1;
+    });
+    const removedLegacyLoanCount = (await Promise.all(legacyLoanDeletes)).reduce<number>((sum, count) => sum + count, 0);
+    return {
+      removedReservationCount,
+      removedLegacyLoanCount,
+      reason: "unknown-item/test/legacy/old reservations and legacy loan docs",
+    };
+  }
+
+  async initializeBaseData() {
+    const current = await this.loadState();
+    const normalized = {
+      ...defaultState(),
+      ...current,
+      schemaVersion: 3,
+      items: sanitizeItems(current.items?.length ? current.items : DEFAULT_EQUIPMENTS),
+      reservations: sanitizeReservations(current.reservations ?? []),
+      adminSettings: {
+        ...defaultAdminSettings,
+        ...current.adminSettings,
+        password: current.adminSettings?.password || ADMIN_DEFAULT_PASSWORD,
+        updatedAt: current.adminSettings?.updatedAt || new Date().toISOString(),
+      },
+    };
+    await writeStateToFirestore(normalized, "seed");
+  }
+
+  async forceReturnReservation(reservationId: string) {
+    const current = await this.loadState();
+    const nowIso = new Date().toISOString();
+    let found = false;
+    const next = current.reservations.map((row) => {
+      if (row.id !== reservationId) return row;
+      found = true;
+      return {
+        ...row,
+        actualReturnedAt: nowIso,
+        returnMode: "forced" as const,
+        returnedByAdmin: "admin",
+        returnNote: row.returnNote ?? "관리자 강제 반납",
+      };
+    });
+    if (!found) throw new Error("강제 반납 대상 예약을 찾지 못했습니다.");
+    await this.setReservations(next);
   }
 
   async getItems() { return (await this.loadState()).items; }
